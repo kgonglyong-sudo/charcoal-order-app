@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "711951373756",
+    "project_id": "seoul-energy-charcoal",
+    "storage_bucket": "seoul-energy-charcoal.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:711951373756:android:c89195f7271c8e179087b9",
+        "android_client_info": {
+          "package_name": "com.example.charcoal_order_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC8sslyPpT3GQjdIEUzb3Fxgs-ExucK6Ww"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:711951373756:android:6d1b5b87b3f8fc6b9087b9",
+        "android_client_info": {
+          "package_name": "com.example.seoul_energy_charcoal"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC8sslyPpT3GQjdIEUzb3Fxgs-ExucK6Ww"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

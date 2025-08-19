@@ -1,0 +1,38 @@
+﻿pid,nameKo,category,origin,active
+laos_7day,라오스 7일탄,라오스,수입산(라오스),True
+dongbang_laos,동방라오스,라오스,수입산(라오스),True
+laos_20day,라오스 20일탄,라오스,수입산(라오스),True
+double_laos,두번구운라오스,라오스,수입산(라오스),True
+rich,리치,베트남,수입산(베트남),True
+double_rich,두번리치,베트남,수입산(베트남),True
+muyeong,무엉,베트남,수입산(베트남),True
+eucalyptus,유칼립투스,베트남,수입산(베트남),True
+nairi_clean,청정참숯,나이지리아 참숯,수입산(나이지리아),True
+nairi_double_clean,두번청정참숯,나이지리아 참숯,수입산(나이지리아),True
+seoul_charcoal,서울참숯,나이지리아 참숯,,True
+ra,RA,인도네시아열탄,수입산(인도네시아),True
+rb,RB,인도네시아열탄,수입산(인도네시아),True
+rm,RM,인도네시아열탄,수입산(인도네시아),True
+rbb,RBB,인도네시아열탄,수입산(인도네시아),True
+rcc,RCC,인도네시아열탄,수입산(인도네시아),True
+sa,SA,인도네시아열탄,수입산(인도네시아),True
+sbb,SBB,인도네시아열탄,수입산(인도네시아),True
+scc,SCC,인도네시아열탄,수입산(인도네시아),True
+bamboo_long,장탄,중국대나무,수입산(중국),True
+bamboo_short,절탄,중국대나무,수입산(중국),True
+seoul_down,서울아래로,야자숯,,True
+chamsari_down,참살이아래로,야자숯,,True
+kkoma,꼬마탄,야자숯,,True
+hwarobul,화로불,야자숯,,True
+cl_hwarobul,CL화로불,야자숯,,True
+banditbul,반딧불숯,야자숯,,True
+seoul_ignition,서울점화탄,야자숯,,True
+chamsari_ignition,참살이점화탄,야자숯,,True
+cl_ignition,CL점화탄,야자숯,,True
+cl_shell,CL조개탄,성형탄,,True
+weber_briquettes,웨버 브리켓,성형탄,,True
+premium_charcoal,최고급참숯,펜션용,,True
+bag_800g_25,800g 봉지숯(25봉),펜션용,,True
+mangrove_bag,마대,망그로브,수입산(인도네시아),True
+mangrove_1kg,1kg 봉지,망그로브,수입산(인도네시아),True
+firewood_10kg,장작 (10kg),장작,,True
