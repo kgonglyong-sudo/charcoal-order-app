@@ -29,7 +29,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
       return Scaffold(
         appBar: AppBar(title: const Text('거래처')),
         body: const Center(
-          child: Text('지점 정보가 없습니다. /user/{uid}.branchId 를 확인하세요.'),
+          child: Text('지점 정보가 없습니다. /users/{uid}.branchId 를 확인하세요.'),
         ),
       );
     }
@@ -223,6 +223,97 @@ class _ClientsScreenState extends State<ClientsScreen> {
     }
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // ▼▼▼ 여기부터 "추가/수정" 다이얼로그 + 지점정책 분기 로직 수정 ▼▼▼
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /// 브랜치 정책 읽기
+  Future<Map<String, dynamic>> _fetchBranchPolicy(String branchId) async {
+    final b = await FirebaseFirestore.instance.collection('branches').doc(branchId).get();
+    return b.data() ?? <String, dynamic>{};
+  }
+
+  String _pad(int n, {int w = 3}) => n.toString().padLeft(w, '0');
+
+  /// 화면에 보여줄 코드 미리보기 (경쟁 상태 방지용: 실제 저장은 트랜잭션에서 다시 계산)
+  Future<String> _previewNextClientCodeByPolicy(String branchId) async {
+    final m = await _fetchBranchPolicy(branchId);
+    final scheme = (m['codeScheme'] ?? 'legacy') as String;
+    if (scheme == 'prefix-seq') {
+      final prefix = (m['codePrefix'] ?? '') as String;
+      final next = (m['clientSeq'] ?? 1) as int;
+      if (prefix.isEmpty) return '자동(지점코드 없음)';
+      return '$prefix${_pad(next)}'; // 예: GP001
+    }
+    // legacy(충청지사 등) 미리보기는 기존 규칙 예측값으로 표시
+    final guess = await _nextClientCode(branchId); // CLIENT###
+    return guess;
+  }
+
+  /// 정책에 맞춰 실제로 생성(트랜잭션). 반환값: 최종 문서ID(코드)
+  Future<String> _createClientByPolicy({
+    required String branchId,
+    required Map<String, dynamic> data,
+  }) async {
+    final db = FirebaseFirestore.instance;
+    return await db.runTransaction<String>((txn) async {
+      final branchRef = db.collection('branches').doc(branchId);
+      final bSnap = await txn.get(branchRef);
+      if (!bSnap.exists) {
+        throw Exception('Branch not found: $branchId');
+      }
+      final m = bSnap.data() as Map<String, dynamic>;
+      final scheme = (m['codeScheme'] ?? 'legacy') as String;
+
+      late String docId;
+
+      if (scheme == 'prefix-seq') {
+        // 김포지사 등: GP### 방식
+        final prefix = (m['codePrefix'] ?? '') as String;
+        final next = (m['clientSeq'] ?? 1) as int;
+        if (prefix.isEmpty) throw Exception('Missing codePrefix in branch');
+        docId = '$prefix${_pad(next)}';
+        // 다음 번호 증가
+        txn.update(branchRef, {'clientSeq': next + 1});
+      } else {
+        // 충청지사 등: 기존 CLIENT### 유지
+        // 최신값을 한 번 더 계산 (동시성에 약하지만 레거시 유지 목적)
+        final last = await db
+            .collection('branches')
+            .doc(branchId)
+            .collection('clients')
+            .orderBy('clientCode', descending: true)
+            .limit(1)
+            .get();
+        int lastNum = 0;
+        if (last.docs.isNotEmpty) {
+          final lastCode = last.docs.first.data()['clientCode'] as String? ?? '';
+          final match = RegExp(r'(\d+)').firstMatch(lastCode);
+          lastNum = int.tryParse(match?.group(1) ?? '0') ?? 0;
+        }
+        final next = lastNum + 1;
+        docId = 'CLIENT${_pad(next)}';
+      }
+
+      final clientRef = branchRef.collection('clients').doc(docId);
+      final exists = await txn.get(clientRef);
+      if (exists.exists) {
+        throw Exception('Duplicated client code: $docId');
+      }
+
+      txn.set(clientRef, {
+        ...data,
+        'clientCode': docId,
+        'branchId': branchId,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'active': data['active'] ?? true,
+      });
+
+      return docId;
+    });
+  }
+
   /// 등록/수정 다이얼로그
   Future<void> _openClientEditor(
     BuildContext context,
@@ -244,10 +335,10 @@ class _ClientsScreenState extends State<ClientsScreen> {
       ...(initial?['deliveryDays'] as List? ?? const []),
     }.whereType<int>().where((e) => e >= 1 && e <= 7).toSet();
 
-    // 코드 자동 채번 (추가 모드일 때만)
-    String autoCode = initial?['clientCode'] ?? '';
+    // 코드 미리보기: 수정 모드면 기존 코드, 추가 모드면 정책 기반 프리뷰
+    String autoCodePreview = initial?['clientCode'] ?? '';
     if (!isEdit) {
-      autoCode = await _nextClientCode(branchId); // e.g. CLIENT006
+      autoCodePreview = await _previewNextClientCodeByPolicy(branchId);
     }
 
     await showDialog(
@@ -263,7 +354,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   TextField(
-                    controller: TextEditingController(text: autoCode),
+                    controller: TextEditingController(text: autoCodePreview),
                     readOnly: true,
                     decoration: const InputDecoration(labelText: '거래처 코드(문서 ID) * 자동'),
                   ),
@@ -347,14 +438,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 final name = nameCtrl.text.trim();
                 if (name.isEmpty) return;
 
-                final ref = FirebaseFirestore.instance
-                    .collection('branches').doc(branchId)
-                    .collection('clients').doc(autoCode);
-
-                final now = FieldValue.serverTimestamp();
-
-                await ref.set({
-                  'clientCode': autoCode,
+                final data = {
                   'name': name,
                   'priceTier': tier,
                   'memo': memoCtrl.text.trim(),
@@ -363,24 +447,48 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   'managerPhone': mPhoneCtrl.text.trim(),
                   'orderPhone': oPhoneCtrl.text.trim(),
                   'email': emailCtrl.text.trim(),
-                  'deliveryDays': days.toList()..sort(),
-                  if (!isEdit) 'createdAt': now,
-                  'updatedAt': now,
-                }, SetOptions(merge: true));
+                  'deliveryDays': (days.toList()..sort()),
+                };
 
-                // 신규 생성 시: 등급 기준 기본 단가 프리셋(변형 없는 상품만 커버, 구버전 호환)
-                if (!isEdit) {
+                if (isEdit) {
+                  // 수정: 기존 문서 업데이트
+                  final code = initial!['clientCode'] as String? ?? '';
+                  final ref = FirebaseFirestore.instance
+                      .collection('branches').doc(branchId)
+                      .collection('clients').doc(code);
+                  await ref.set({
+                    ...data,
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  }, SetOptions(merge: true));
+
+                  if (!mounted) return;
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('수정되었습니다.')),
+                  );
+                } else {
+                  // 신규: 지점정책에 맞춰 안전하게 생성(트랜잭션)
+                  final createdCode = await _createClientByPolicy(
+                    branchId: branchId,
+                    data: data,
+                  );
+
+                  // 신규 생성 시: 등급 기준 기본 단가 프리셋(구버전 호환)
+                  final ref = FirebaseFirestore.instance
+                      .collection('branches').doc(branchId)
+                      .collection('clients').doc(createdCode);
+
                   final preset = await _defaultPricesForTier(tier);
                   if (preset.isNotEmpty) {
                     await ref.set({'priceOverrides': preset}, SetOptions(merge: true));
                   }
-                }
 
-                if (!mounted) return;
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(isEdit ? '수정되었습니다.' : '등록되었습니다.')),
-                );
+                  if (!mounted) return;
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('등록되었습니다. ($createdCode)')),
+                  );
+                }
               },
               child: Text(isEdit ? '수정' : '등록'),
             ),
@@ -390,7 +498,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
     );
   }
 
-  /// 다음 코드 생성: CLIENT001 → … → CLIENTXYZ
+  /// (레거시용) 다음 코드 생성: CLIENT001 → …
   Future<String> _nextClientCode(String branchId) async {
     final snap = await FirebaseFirestore.instance
         .collection('branches').doc(branchId)
@@ -457,7 +565,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
       final rows = <_ProdBlock>[];
       int _asInt(dynamic v) => v is num ? v.toInt() : (int.tryParse('$v') ?? 0);
 
-      // product 정렬/필터: deletedAt==null, sortOrder ASC, nameKo/name
+      // product 정렬/필터
       final pdocs = ps.docs
           .where((d) => d.data()['deletedAt'] == null)
           .toList()
