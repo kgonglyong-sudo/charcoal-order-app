@@ -224,10 +224,9 @@ class _ClientsScreenState extends State<ClientsScreen> {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // ▼▼▼ 여기부터 "추가/수정" 다이얼로그 + 지점정책 분기 로직 수정 ▼▼▼
+  // ▼▼▼ 지점정책 분기 & 생성 로직 ▼▼▼
   // ───────────────────────────────────────────────────────────────────────────
 
-  /// 브랜치 정책 읽기
   Future<Map<String, dynamic>> _fetchBranchPolicy(String branchId) async {
     final b = await FirebaseFirestore.instance.collection('branches').doc(branchId).get();
     return b.data() ?? <String, dynamic>{};
@@ -235,7 +234,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
 
   String _pad(int n, {int w = 3}) => n.toString().padLeft(w, '0');
 
-  /// 화면에 보여줄 코드 미리보기 (경쟁 상태 방지용: 실제 저장은 트랜잭션에서 다시 계산)
   Future<String> _previewNextClientCodeByPolicy(String branchId) async {
     final m = await _fetchBranchPolicy(branchId);
     final scheme = (m['codeScheme'] ?? 'legacy') as String;
@@ -243,75 +241,82 @@ class _ClientsScreenState extends State<ClientsScreen> {
       final prefix = (m['codePrefix'] ?? '') as String;
       final next = (m['clientSeq'] ?? 1) as int;
       if (prefix.isEmpty) return '자동(지점코드 없음)';
-      return '$prefix${_pad(next)}'; // 예: GP001
+      return '$prefix${_pad(next)}';
     }
-    // legacy(충청지사 등) 미리보기는 기존 규칙 예측값으로 표시
-    final guess = await _nextClientCode(branchId); // CLIENT###
-    return guess;
+    return _nextClientCode(branchId);
   }
 
-  /// 정책에 맞춰 실제로 생성(트랜잭션). 반환값: 최종 문서ID(코드)
+  /// 정책에 맞춰 안전 생성(트랜잭션) + 에러원인 노출
   Future<String> _createClientByPolicy({
     required String branchId,
     required Map<String, dynamic> data,
   }) async {
     final db = FirebaseFirestore.instance;
-    return await db.runTransaction<String>((txn) async {
-      final branchRef = db.collection('branches').doc(branchId);
-      final bSnap = await txn.get(branchRef);
-      if (!bSnap.exists) {
-        throw Exception('Branch not found: $branchId');
-      }
-      final m = bSnap.data() as Map<String, dynamic>;
-      final scheme = (m['codeScheme'] ?? 'legacy') as String;
 
-      late String docId;
-
-      if (scheme == 'prefix-seq') {
-        // 김포지사 등: GP### 방식
-        final prefix = (m['codePrefix'] ?? '') as String;
-        final next = (m['clientSeq'] ?? 1) as int;
-        if (prefix.isEmpty) throw Exception('Missing codePrefix in branch');
-        docId = '$prefix${_pad(next)}';
-        // 다음 번호 증가
-        txn.update(branchRef, {'clientSeq': next + 1});
-      } else {
-        // 충청지사 등: 기존 CLIENT### 유지
-        // 최신값을 한 번 더 계산 (동시성에 약하지만 레거시 유지 목적)
-        final last = await db
-            .collection('branches')
-            .doc(branchId)
-            .collection('clients')
-            .orderBy('clientCode', descending: true)
-            .limit(1)
-            .get();
-        int lastNum = 0;
-        if (last.docs.isNotEmpty) {
-          final lastCode = last.docs.first.data()['clientCode'] as String? ?? '';
-          final match = RegExp(r'(\d+)').firstMatch(lastCode);
-          lastNum = int.tryParse(match?.group(1) ?? '0') ?? 0;
+    try {
+      return await db.runTransaction<String>((txn) async {
+        final branchRef = db.collection('branches').doc(branchId);
+        final bSnap = await txn.get(branchRef);
+        if (!bSnap.exists) {
+          throw Exception('Branch not found: $branchId');
         }
-        final next = lastNum + 1;
-        docId = 'CLIENT${_pad(next)}';
-      }
 
-      final clientRef = branchRef.collection('clients').doc(docId);
-      final exists = await txn.get(clientRef);
-      if (exists.exists) {
-        throw Exception('Duplicated client code: $docId');
-      }
+        final m = bSnap.data() as Map<String, dynamic>;
+        final scheme = (m['codeScheme'] ?? 'legacy') as String;
 
-      txn.set(clientRef, {
-        ...data,
-        'clientCode': docId,
-        'branchId': branchId,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'active': data['active'] ?? true,
+        late String docId;
+
+        if (scheme == 'prefix-seq') {
+          // 김포지사: GP###
+          final prefix = (m['codePrefix'] ?? '') as String;
+          final next = (m['clientSeq'] ?? 1) as int;
+          if (prefix.isEmpty) throw Exception('Missing codePrefix in branch');
+          docId = '$prefix${_pad(next)}';
+          // 다음 번호 증가
+          txn.update(branchRef, {'clientSeq': next + 1});
+        } else {
+          // 레거시(충청지사): CLIENT###
+          final last = await db
+              .collection('branches').doc(branchId)
+              .collection('clients')
+              .orderBy('clientCode', descending: true)
+              .limit(1)
+              .get();
+          int lastNum = 0;
+          if (last.docs.isNotEmpty) {
+            final lastCode = last.docs.first.data()['clientCode'] as String? ?? '';
+            final match = RegExp(r'(\d+)').firstMatch(lastCode);
+            lastNum = int.tryParse(match?.group(1) ?? '0') ?? 0;
+          }
+          docId = 'CLIENT${_pad(lastNum + 1)}';
+        }
+
+        // 중복 방지
+        final clientRef = branchRef.collection('clients').doc(docId);
+        final exists = await txn.get(clientRef);
+        if (exists.exists) {
+          throw Exception('Duplicated client code: $docId');
+        }
+
+        // 저장
+        txn.set(clientRef, {
+          ...data,
+          'clientCode': docId,
+          'branchId': branchId,
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+          'active': data['active'] ?? true,
+        });
+
+        return docId;
       });
-
-      return docId;
-    });
+    } on FirebaseException catch (e) {
+      // Firestore 권한/유효성 문제 등을 명확히 노출
+      throw Exception('FirebaseException: ${e.code} ${e.message}');
+    } catch (e) {
+      // 커스텀 예외(중복, 브랜치 필드 누락 등)
+      throw Exception(e.toString());
+    }
   }
 
   /// 등록/수정 다이얼로그
@@ -330,12 +335,10 @@ class _ClientsScreenState extends State<ClientsScreen> {
     final emailCtrl = TextEditingController(text: initial?['email'] ?? '');
     String tier = (initial?['priceTier'] as String? ?? 'B').toUpperCase();
 
-    // 배송 요일
     final Set<int> days = {
       ...(initial?['deliveryDays'] as List? ?? const []),
     }.whereType<int>().where((e) => e >= 1 && e <= 7).toSet();
 
-    // 코드 미리보기: 수정 모드면 기존 코드, 추가 모드면 정책 기반 프리뷰
     String autoCodePreview = initial?['clientCode'] ?? '';
     if (!isEdit) {
       autoCodePreview = await _previewNextClientCodeByPolicy(branchId);
@@ -383,8 +386,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-
-                  // 지정 배송요일
                   Align(
                     alignment: Alignment.centerLeft,
                     child: Column(
@@ -395,7 +396,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                         Wrap(
                           spacing: 6,
                           children: List.generate(7, (i) {
-                            final w = i + 1; // 1~7
+                            final w = i + 1;
                             return FilterChip(
                               label: Text(_weekdayLabel(w)),
                               selected: days.contains(w),
@@ -415,7 +416,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-
                   TextField(controller: bizCtrl, decoration: const InputDecoration(labelText: '사업자등록번호')),
                   const SizedBox(height: 8),
                   TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: '사업장 주소')),
@@ -450,43 +450,53 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   'deliveryDays': (days.toList()..sort()),
                 };
 
-                if (isEdit) {
-                  // 수정: 기존 문서 업데이트
-                  final code = initial!['clientCode'] as String? ?? '';
-                  final ref = FirebaseFirestore.instance
-                      .collection('branches').doc(branchId)
-                      .collection('clients').doc(code);
-                  await ref.set({
-                    ...data,
-                    'updatedAt': FieldValue.serverTimestamp(),
-                  }, SetOptions(merge: true));
+                try {
+                  if (isEdit) {
+                    final code = initial!['clientCode'] as String? ?? '';
+                    final ref = FirebaseFirestore.instance
+                        .collection('branches').doc(branchId)
+                        .collection('clients').doc(code);
+                    await ref.set({
+                      ...data,
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    }, SetOptions(merge: true));
 
-                  if (!mounted) return;
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('수정되었습니다.')),
-                  );
-                } else {
-                  // 신규: 지점정책에 맞춰 안전하게 생성(트랜잭션)
-                  final createdCode = await _createClientByPolicy(
-                    branchId: branchId,
-                    data: data,
-                  );
+                    if (!mounted) return;
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('수정되었습니다.')),
+                    );
+                  } else {
+                    final createdCode = await _createClientByPolicy(
+                      branchId: branchId,
+                      data: data,
+                    );
 
-                  // 신규 생성 시: 등급 기준 기본 단가 프리셋(구버전 호환)
-                  final ref = FirebaseFirestore.instance
-                      .collection('branches').doc(branchId)
-                      .collection('clients').doc(createdCode);
+                    final ref = FirebaseFirestore.instance
+                        .collection('branches').doc(branchId)
+                        .collection('clients').doc(createdCode);
+                    final preset = await _defaultPricesForTier(tier);
+                    if (preset.isNotEmpty) {
+                      await ref.set({'priceOverrides': preset}, SetOptions(merge: true));
+                    }
 
-                  final preset = await _defaultPricesForTier(tier);
-                  if (preset.isNotEmpty) {
-                    await ref.set({'priceOverrides': preset}, SetOptions(merge: true));
+                    if (!mounted) return;
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('등록되었습니다. ($createdCode)')),
+                    );
                   }
-
+                } on FirebaseException catch (e, st) {
+                  debugPrint('FirebaseException: ${e.code} ${e.message}\n$st');
                   if (!mounted) return;
-                  Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('등록되었습니다. ($createdCode)')),
+                    SnackBar(content: Text('거래처 등록 실패: ${e.code} ${e.message}')),
+                  );
+                } catch (e, st) {
+                  debugPrint('Error on create client: $e\n$st');
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('거래처 등록 실패: $e')),
                   );
                 }
               },
@@ -532,7 +542,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
         if (p is num) price = p.toInt();
       }
       if (price == 0) {
-        final p2 = m['price$tier']; // priceA, priceB, priceC (아주 구버전)
+        final p2 = m['price$tier']; // priceA, priceB, priceC
         if (p2 is num) price = p2.toInt();
       }
       map[pid] = price;
@@ -565,7 +575,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
       final rows = <_ProdBlock>[];
       int _asInt(dynamic v) => v is num ? v.toInt() : (int.tryParse('$v') ?? 0);
 
-      // product 정렬/필터
       final pdocs = ps.docs
           .where((d) => d.data()['deletedAt'] == null)
           .toList()
@@ -596,7 +605,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
             return ao.compareTo(bo);
           });
 
-        // 변형이 없는 상품: 구버전 호환
         if (vdocs.isEmpty) {
           final prices = Map<String, dynamic>.from(pm['prices'] ?? const {});
           final base = _asInt(prices[tier.toUpperCase()]);
@@ -614,7 +622,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 active: (pm['active'] ?? true) == true,
                 basePrice: base,
                 controller: controller,
-                keyForSave: pid, // 구버전 키
+                keyForSave: pid,
                 isLegacy: true,
               ),
             ],
@@ -648,7 +656,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
             active: active,
             basePrice: base,
             controller: controller,
-            keyForSave: key, // 'pid|vid'
+            keyForSave: key,
             isLegacy: false,
           ));
         }
@@ -765,9 +773,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                           icon: const Icon(Icons.save),
                           label: const Text('저장'),
                           onPressed: () async {
-                            // V2: pid|vid 모음
                             final v2 = <String, int>{};
-                            // 구버전: 변형 없는 상품용 pid 저장
                             final legacy = <String, int>{};
 
                             for (final pb in rows) {
@@ -775,9 +781,9 @@ class _ClientsScreenState extends State<ClientsScreen> {
                                 final text = vr.controller.text.trim();
                                 final val = int.tryParse(text) ?? vr.basePrice;
                                 if (vr.isLegacy) {
-                                  legacy[vr.keyForSave] = val; // pid
+                                  legacy[vr.keyForSave] = val;
                                 } else {
-                                  v2[vr.keyForSave] = val; // 'pid|vid'
+                                  v2[vr.keyForSave] = val;
                                 }
                               }
                             }
@@ -786,9 +792,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                               'priceOverridesV2': v2,
                               'updatedAt': FieldValue.serverTimestamp(),
                             };
-                            if (legacy.isNotEmpty) {
-                              data['priceOverrides'] = legacy;
-                            }
+                            if (legacy.isNotEmpty) data['priceOverrides'] = legacy;
 
                             await docRef.set(data, SetOptions(merge: true));
                             if (!context.mounted) return;
@@ -827,7 +831,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
     return labels[weekday] ?? '$weekday';
   }
 
-  /// 지정 요일들 중 "오늘 기준 가장 가까운 이번 주 날짜" (이번 주 내에 없으면 다음 주 첫 선택 요일)
   static DateTime? _nextDeliveryDate(DateTime now, List<int> weekdays) {
     if (weekdays.isEmpty) return null;
     final days = [...weekdays]..sort();
@@ -837,13 +840,11 @@ class _ClientsScreenState extends State<ClientsScreen> {
       final d = monday.add(Duration(days: w - 1));
       if (!d.isBefore(base)) return d;
     }
-    // 이번 주 지났다면 다음 주 첫 요일
     final firstNextWeek = monday.add(const Duration(days: 7));
     return firstNextWeek.add(Duration(days: days.first - 1));
   }
 }
 
-/// 내부 표시용 모델
 class _ProdBlock {
   _ProdBlock({
     required this.pid,
@@ -862,7 +863,7 @@ class _VarRow {
     required this.active,
     required this.basePrice,
     required this.controller,
-    required this.keyForSave, // 'pid|vid' 또는 'pid'(legacy)
+    required this.keyForSave,
     required this.isLegacy,
   });
   final String vid;
@@ -870,6 +871,6 @@ class _VarRow {
   final bool active;
   final int basePrice;
   final TextEditingController controller;
-  final String keyForSave;
+  final String keyForSave; // 'pid|vid' 또는 'pid'(legacy)
   final bool isLegacy;
 }

@@ -24,46 +24,77 @@ class ClientService {
   }
 
   /// 지점 정책에 맞춰 거래처 생성 (문서ID 자동)
-  Future<void> createClient({
+  /// 반환: 최종 생성된 clientCode (예: CLIENT007, GP003)
+  Future<String> createClient({
     required String branchId,
     required Map<String, dynamic> data,
   }) async {
-    await db.runTransaction((txn) async {
-      final branchRef = db.collection('branches').doc(branchId);
-      final bSnap = await txn.get(branchRef);
-      if (!bSnap.exists) throw Exception('Branch not found');
+    try {
+      return await db.runTransaction<String>((txn) async {
+        final branchRef = db.collection('branches').doc(branchId);
+        final bSnap = await txn.get(branchRef);
+        if (!bSnap.exists) {
+          throw Exception('Branch not found: $branchId');
+        }
 
-      final m = bSnap.data() as Map<String, dynamic>;
-      final scheme = (m['codeScheme'] ?? 'legacy') as String;
+        final m = bSnap.data() as Map<String, dynamic>;
+        final scheme = (m['codeScheme'] ?? 'legacy') as String;
 
-      late String docId;
+        late String docId;
 
-      if (scheme == 'legacy') {
-        // ✅ 충청지사 등 레거시 방식: 기존 로직을 그대로 사용
-        // 예: 자동 증가 “CLIENT001 …” 혹은 지금 쓰는 방식 호출
-        // 여기선 임시로 자동 ID를 쓰되, 네가 기존 함수가 있으면 그걸 호출해.
-        docId = db.collection('dummy').doc().id; // <- 기존 로직으로 교체
-      } else if (scheme == 'prefix-seq') {
-        final prefix = (m['codePrefix'] ?? '') as String;
-        final next = (m['clientSeq'] ?? 1) as int;
-        if (prefix.isEmpty) throw Exception('Missing codePrefix');
-        docId = '$prefix${_pad(next)}'; // GP001
-        txn.update(branchRef, {'clientSeq': next + 1});
-      } else {
-        throw Exception('Unknown code scheme: $scheme');
-      }
+        if (scheme == 'prefix-seq') {
+          // ✅ 김포지사 등: GP### 방식
+          final prefix = (m['codePrefix'] ?? '') as String;
+          final next = (m['clientSeq'] ?? 1) as int;
+          if (prefix.isEmpty) {
+            throw Exception('Missing codePrefix in branch "$branchId"');
+          }
+          docId = '$prefix${_pad(next)}';       // 예: GP001
+          txn.update(branchRef, {'clientSeq': next + 1}); // 다음 번호 올리기
+        } else if (scheme == 'legacy') {
+          // ✅ 충청지사 등: CLIENT### 유지
+          final last = await db
+              .collection('branches').doc(branchId)
+              .collection('clients')
+              .orderBy('clientCode', descending: true)
+              .limit(1)
+              .get();
+          int lastNum = 0;
+          if (last.docs.isNotEmpty) {
+            final lastCode = last.docs.first.data()['clientCode'] as String? ?? '';
+            final match = RegExp(r'(\d+)').firstMatch(lastCode);
+            lastNum = int.tryParse(match?.group(1) ?? '0') ?? 0;
+          }
+          docId = 'CLIENT${_pad(lastNum + 1)}';
+        } else {
+          throw Exception('Unknown code scheme: $scheme');
+        }
 
-      final clientRef = branchRef.collection('clients').doc(docId);
-      final exists = await txn.get(clientRef);
-      if (exists.exists) throw Exception('Duplicated client code: $docId');
+        // 중복 방지
+        final clientRef = branchRef.collection('clients').doc(docId);
+        final exists = await txn.get(clientRef);
+        if (exists.exists) {
+          throw Exception('Duplicated client code: $docId');
+        }
 
-      txn.set(clientRef, {
-        ...data,
-        'code': docId,
-        'branchId': branchId,
-        'createdAt': FieldValue.serverTimestamp(),
-        'active': data['active'] ?? true,
+        // 저장
+        txn.set(clientRef, {
+          ...data,
+          'clientCode': docId,                    // ← 필드명 통일
+          'branchId': branchId,
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+          'active': data['active'] ?? true,
+        });
+
+        return docId;
       });
-    });
+    } on FirebaseException catch (e) {
+      // 파이어스토어 에러코드 노출 (permission-denied 등)
+      throw Exception('FirebaseException: ${e.code} ${e.message}');
+    } catch (e) {
+      // 커스텀 에러 그대로 전달
+      throw Exception(e.toString());
+    }
   }
 }
