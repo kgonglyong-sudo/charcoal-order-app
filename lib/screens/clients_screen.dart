@@ -1,12 +1,14 @@
 // lib/screens/clients_screen.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 
+/// 컬렉션 구조:
 /// branches/{branchId}/clients/{clientCode}
 /// 필드:
-/// - clientCode, name, priceTier(A/B/C), memo?, createdAt, updatedAt
+/// - clientCode, name, priceTier(A/B/C), memo?, createdAt, updatedAt, active
 /// - bizNo, address, managerPhone, orderPhone, email
 /// - priceOverrides:   { productId: int }          // 구버전(변형 없음)
 /// - priceOverridesV2: { 'pid|vid': int }          // 신규(변형 단위)
@@ -100,7 +102,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   return s.isEmpty || code.contains(s) || name.contains(s);
                 }).toList();
 
-                // 정렬: clientCode 숫자 기준 오름차순
+                // 정렬: clientCode 내 숫자 기준 오름차순
                 int extractNum(QueryDocumentSnapshot<Map<String, dynamic>> d) {
                   final code = (d['clientCode'] as String? ?? d.id);
                   final n = RegExp(r'\d+').firstMatch(code)?.group(0);
@@ -224,7 +226,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // ▼▼▼ 지점정책 분기 & 생성 로직 ▼▼▼
+  // 지점정책 분기 & 생성 로직
   // ───────────────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> _fetchBranchPolicy(String branchId) async {
@@ -243,18 +245,18 @@ class _ClientsScreenState extends State<ClientsScreen> {
       if (prefix.isEmpty) return '자동(지점코드 없음)';
       return '$prefix${_pad(next)}';
     }
-    return _nextClientCode(branchId);
+    return _nextClientCode(branchId); // legacy
   }
 
-  /// 정책에 맞춰 안전 생성(트랜잭션) + 에러원인 노출
+  /// 정책에 맞춰 안전 생성(트랜잭션) + 낙관적 재시도
   Future<String> _createClientByPolicy({
     required String branchId,
     required Map<String, dynamic> data,
   }) async {
     final db = FirebaseFirestore.instance;
 
-    try {
-      return await db.runTransaction<String>((txn) async {
+    Future<String> _tx() {
+      return db.runTransaction<String>((txn) async {
         final branchRef = db.collection('branches').doc(branchId);
         final bSnap = await txn.get(branchRef);
         if (!bSnap.exists) {
@@ -267,15 +269,13 @@ class _ClientsScreenState extends State<ClientsScreen> {
         late String docId;
 
         if (scheme == 'prefix-seq') {
-          // 김포지사: GP###
           final prefix = (m['codePrefix'] ?? '') as String;
           final next = (m['clientSeq'] ?? 1) as int;
           if (prefix.isEmpty) throw Exception('Missing codePrefix in branch');
           docId = '$prefix${_pad(next)}';
-          // 다음 번호 증가
           txn.update(branchRef, {'clientSeq': next + 1});
         } else {
-          // 레거시(충청지사): CLIENT###
+          // legacy: CLIENT###
           final last = await db
               .collection('branches').doc(branchId)
               .collection('clients')
@@ -310,12 +310,26 @@ class _ClientsScreenState extends State<ClientsScreen> {
 
         return docId;
       });
-    } on FirebaseException catch (e) {
-      // Firestore 권한/유효성 문제 등을 명확히 노출
-      throw Exception('FirebaseException: ${e.code} ${e.message}');
-    } catch (e) {
-      // 커스텀 예외(중복, 브랜치 필드 누락 등)
-      throw Exception(e.toString());
+    }
+
+    const maxRetries = 3;
+    int attempt = 0;
+    while (true) {
+      attempt++;
+      try {
+        return await _tx();
+      } on FirebaseException catch (e) {
+        // 권한/네트워크 에러는 바로 노출
+        throw Exception('FirebaseException: ${e.code} ${e.message}');
+      } catch (e) {
+        // 동시성/중복 같은 경우 재시도
+        if (attempt <= maxRetries &&
+            ('$e'.contains('duplicated') || '$e'.contains('already exists'))) {
+          await Future.delayed(Duration(milliseconds: 120 * attempt));
+          continue;
+        }
+        rethrow;
+      }
     }
   }
 
@@ -493,10 +507,12 @@ class _ClientsScreenState extends State<ClientsScreen> {
                     SnackBar(content: Text('거래처 등록 실패: ${e.code} ${e.message}')),
                   );
                 } catch (e, st) {
-                  debugPrint('Error on create client: $e\n$st');
+                  Object inner = e;
+                  if (e is AsyncError) inner = e.error ?? e;
+                  debugPrint('Error on create client (unboxed): $inner\n$st');
                   if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('거래처 등록 실패: $e')),
+                    SnackBar(content: Text('거래처 등록 실패: $inner')),
                   );
                 }
               },
@@ -575,6 +591,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
       final rows = <_ProdBlock>[];
       int _asInt(dynamic v) => v is num ? v.toInt() : (int.tryParse('$v') ?? 0);
 
+      // product 정렬/필터
       final pdocs = ps.docs
           .where((d) => d.data()['deletedAt'] == null)
           .toList()
@@ -605,6 +622,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
             return ao.compareTo(bo);
           });
 
+        // 변형이 없는 상품: 구버전 호환
         if (vdocs.isEmpty) {
           final prices = Map<String, dynamic>.from(pm['prices'] ?? const {});
           final base = _asInt(prices[tier.toUpperCase()]);
@@ -622,7 +640,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 active: (pm['active'] ?? true) == true,
                 basePrice: base,
                 controller: controller,
-                keyForSave: pid,
+                keyForSave: pid, // 구버전 키
                 isLegacy: true,
               ),
             ],
@@ -656,7 +674,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
             active: active,
             basePrice: base,
             controller: controller,
-            keyForSave: key,
+            keyForSave: key, // 'pid|vid'
             isLegacy: false,
           ));
         }
@@ -781,9 +799,9 @@ class _ClientsScreenState extends State<ClientsScreen> {
                                 final text = vr.controller.text.trim();
                                 final val = int.tryParse(text) ?? vr.basePrice;
                                 if (vr.isLegacy) {
-                                  legacy[vr.keyForSave] = val;
+                                  legacy[vr.keyForSave] = val; // pid
                                 } else {
-                                  v2[vr.keyForSave] = val;
+                                  v2[vr.keyForSave] = val; // 'pid|vid'
                                 }
                               }
                             }
@@ -820,6 +838,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
     }
   }
 
+  // ── Helpers ────────────────────────────────────────────────────────────────
   static String _comma(int v) =>
       v.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
 
@@ -831,6 +850,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
     return labels[weekday] ?? '$weekday';
   }
 
+  /// 지정 요일들 중 "오늘 기준 가장 가까운 이번 주 날짜" (이번 주 내에 없으면 다음 주 첫 선택 요일)
   static DateTime? _nextDeliveryDate(DateTime now, List<int> weekdays) {
     if (weekdays.isEmpty) return null;
     final days = [...weekdays]..sort();
@@ -845,6 +865,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
   }
 }
 
+// 내부 표시용 모델들
 class _ProdBlock {
   _ProdBlock({
     required this.pid,

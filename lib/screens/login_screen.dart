@@ -1,4 +1,3 @@
-// lib/screens/login_screen.dart
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -11,13 +10,13 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen>
-    with SingleTickerProviderStateMixin {
+class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStateMixin {
   final _clientCodeController = TextEditingController();
   bool _isCodeLoading = false;
 
   late final AnimationController _anim;
   late final _CharcoalParticles _particles;
+  String? _selectedBranchId = 'branch_김포지사'; // 기본 지점 설정
 
   @override
   void initState() {
@@ -56,10 +55,10 @@ class _LoginScreenState extends State<LoginScreen>
 
   Future<void> _loginWithCode() async {
     final code = _clientCodeController.text.trim();
-    if (code.isEmpty) return _toast('거래처 코드를 입력해주세요');
+    if (code.isEmpty || _selectedBranchId == null) return _toast('거래처 코드와 지점을 선택해주세요');
     setState(() => _isCodeLoading = true);
     try {
-      final ok = await context.read<AuthService>().login(code);
+      final ok = await context.read<AuthService>().login(code, _selectedBranchId!);
       if (!ok) _toast('잘못된 거래처 코드입니다');
     } catch (e) {
       _toast('로그인 오류: $e');
@@ -295,6 +294,19 @@ class _LoginScreenState extends State<LoginScreen>
                             ),
                             textCapitalization: TextCapitalization.characters,
                             onSubmitted: (_) => _loginWithCode(),
+                          ),
+                          const SizedBox(height: 12),
+                          DropdownButton<String>(
+                            value: _selectedBranchId,
+                            onChanged: (value) {
+                              setState(() {
+                                _selectedBranchId = value;
+                              });
+                            },
+                            items: const [
+                              DropdownMenuItem(value: 'branch_김포지사', child: Text('김포지사')),
+                              DropdownMenuItem(value: 'branch_충청지사', child: Text('충청지사')),
+                            ],
                           ),
                           const SizedBox(height: 12),
                           SizedBox(

@@ -1,4 +1,3 @@
-// lib/services/auth_service.dart
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -75,11 +74,11 @@ class AuthService with ChangeNotifier {
     _role = data['role'] as String?;
 
     if (_role == 'client') {
-      // ✅ 클라이언트 프로필 로딩
+      // 클라이언트 프로필 로딩
       _managerBranchId = null; // 혹시 이전 상태가 남아있지 않도록 초기화
 
       final branchId = (data['branchId'] ?? '') as String;
-      final code     = (data['clientCode'] ?? '') as String;
+      final code = (data['clientCode'] ?? '') as String;
 
       // deliveryDays는 user 문서에 없으므로 실제 clients 문서에서 보강해서 로드
       Map<String, dynamic> clientDocData = {};
@@ -106,10 +105,9 @@ class AuthService with ChangeNotifier {
         deliveryDays: safeDays,
       );
     } else {
-      // ✅ 매니저/관리자 프로필 로딩
+      // 매니저/관리자 프로필 로딩
       _currentClient = null;
       _managerBranchId = (data['branchId'] ?? '') as String?;
-      // (관리자는 브랜치가 없을 수도 있음. 매니저 화면에서 branchId가 필수라면 user 문서에 채워주세요)
     }
 
     notifyListeners();
@@ -117,27 +115,27 @@ class AuthService with ChangeNotifier {
 
   // ------------------------------
   // 거래처 코드 로그인
-  // 1) 익명 로그인 보장
-  // 2) collectionGroup('clients')에서 clientCode로 문서 찾기
-  // 3) 찾은 문서의 상위 브랜치ID와 정보로 /user/{uid} '최초 1회' 생성
   // ------------------------------
-  Future<bool> login(String codeRaw) async {
+  Future<bool> login(String codeRaw, String branchIdRaw) async {
     final code = codeRaw.trim().toUpperCase();
-    if (code.isEmpty) return false;
+    final branchId = branchIdRaw.trim().toUpperCase(); // ✅ branchId를 여기서 선언하고 계속 사용
+
+    if (code.isEmpty || branchId.isEmpty) return false;
 
     _setLoading(true);
     await Future.delayed(const Duration(milliseconds: 200));
 
     try {
-      // 1) 익명 로그인 보장 (Firebase 콘솔 → Authentication → Anonymous 활성화)
+      // 1) 익명 로그인 보장
       User? u = _auth.currentUser;
       u ??= (await _auth.signInAnonymously()).user;
       if (u == null) throw Exception('익명 로그인 실패');
 
-      // 2) clients 컬렉션그룹에서 코드 검색 (규칙에서 clients read 허용 필요)
+      // 2) clients 컬렉션그룹에서 코드와 지점ID로 검색
       final qs = await _db
           .collectionGroup('clients')
           .where('clientCode', isEqualTo: code)
+          .where('branchId', isEqualTo: branchId) // ✅ 입력받은 branchId로 필터링
           .limit(1)
           .get();
 
@@ -151,7 +149,8 @@ class AuthService with ChangeNotifier {
 
       final clientDoc = qs.docs.first;
       final data = clientDoc.data();
-      final branchId  = clientDoc.reference.parent.parent!.id; // 상위 브랜치 문서 ID
+      
+      // ✅ 불필요한 branchId 재선언 삭제. 위에서 정의한 branchId를 그대로 사용.
       final name      = (data['name'] ?? '') as String;
       final priceTier = ((data['priceTier'] ?? 'C') as String).toUpperCase();
 
@@ -160,13 +159,13 @@ class AuthService with ChangeNotifier {
           .where((e) => e >= 1 && e <= 7)
           .toList();
 
-      // 3) /user/{uid} 문서 "최초 1회 생성" (규칙: create만 허용, update는 admin 전용)
+      // 3) /user/{uid} 문서 "최초 1회 생성"
       final userRef = _db.collection('user').doc(u.uid);
       final userSnap = await userRef.get();
       if (!userSnap.exists) {
         await userRef.set({
           'role': 'client',
-          'branchId': branchId,
+          'branchId': branchId, // ✅ 입력받은 branchId 저장
           'clientCode': code,
           'priceTier': priceTier,
           'name': name,
@@ -174,17 +173,16 @@ class AuthService with ChangeNotifier {
           'updatedAt': FieldValue.serverTimestamp(),
         });
       }
-      // 이미 존재하면 규칙상 업데이트가 막혀 있으므로 건드리지 않음
 
       // 메모리 상태 갱신
       _currentClient = Client(
         code: code,
         name: name,
-        branchId: branchId,
+        branchId: branchId, // ✅ 입력받은 branchId 사용
         priceTier: priceTier,
         deliveryDays: parsedDays,
       );
-      _managerBranchId = null; // ✅ 클라이언트 로그인 시 매니저 필드는 비움
+      _managerBranchId = null;
       _role = 'client';
       _isSignedIn = true;
       hasError = false;
@@ -211,7 +209,7 @@ class AuthService with ChangeNotifier {
       await _auth.signOut();
     } finally {
       _currentClient = null;
-      _managerBranchId = null; // ✅ 정리
+      _managerBranchId = null;
       _role = null;
       _isSignedIn = false;
       hasError = false;

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:bcrypt/bcrypt.dart';  // 비밀번호 해시화 라이브러리
 
 class BranchPolicy {
   final String scheme;     // 'legacy' | 'prefix-seq'
@@ -13,13 +14,14 @@ class ClientService {
   final FirebaseFirestore db;
   ClientService(this.db);
 
+  // 지점 정책 가져오기
   Future<BranchPolicy> fetchBranchPolicy(String branchId) async {
     final doc = await db.collection('branches').doc(branchId).get();
     final m = (doc.data() ?? {});
     return BranchPolicy(
       scheme: (m['codeScheme'] ?? 'legacy') as String,
       codePrefix: (m['codePrefix'] ?? '') as String,
-      clientSeq: (m['clientSeq'] ?? 1) as int,
+      clientSeq: (m['nextClientSeq'] ?? 1) as int,  // nextClientSeq로 관리
     );
   }
 
@@ -28,6 +30,7 @@ class ClientService {
   Future<String> createClient({
     required String branchId,
     required Map<String, dynamic> data,
+    required String rawPassword,  // 비밀번호 처리
   }) async {
     try {
       return await db.runTransaction<String>((txn) async {
@@ -39,20 +42,21 @@ class ClientService {
 
         final m = bSnap.data() as Map<String, dynamic>;
         final scheme = (m['codeScheme'] ?? 'legacy') as String;
+        final nextClientSeq = (m['nextClientSeq'] ?? 1) as int;  // nextClientSeq 사용
 
         late String docId;
 
+        // 지점 정책에 따른 코드 생성
         if (scheme == 'prefix-seq') {
-          // ✅ 김포지사 등: GP### 방식
+          // GP### 방식
           final prefix = (m['codePrefix'] ?? '') as String;
-          final next = (m['clientSeq'] ?? 1) as int;
           if (prefix.isEmpty) {
             throw Exception('Missing codePrefix in branch "$branchId"');
           }
-          docId = '$prefix${_pad(next)}';       // 예: GP001
-          txn.update(branchRef, {'clientSeq': next + 1}); // 다음 번호 올리기
+          docId = '$prefix${_pad(nextClientSeq)}';  // 예: GP001
+          txn.update(branchRef, {'nextClientSeq': nextClientSeq + 1});  // 다음 번호 올리기
         } else if (scheme == 'legacy') {
-          // ✅ 충청지사 등: CLIENT### 유지
+          // CLIENT### 방식
           final last = await db
               .collection('branches').doc(branchId)
               .collection('clients')
@@ -65,7 +69,7 @@ class ClientService {
             final match = RegExp(r'(\d+)').firstMatch(lastCode);
             lastNum = int.tryParse(match?.group(1) ?? '0') ?? 0;
           }
-          docId = 'CLIENT${_pad(lastNum + 1)}';
+          docId = 'CLIENT${_pad(lastNum + 1)}';  // 예: CLIENT007
         } else {
           throw Exception('Unknown code scheme: $scheme');
         }
@@ -77,10 +81,18 @@ class ClientService {
           throw Exception('Duplicated client code: $docId');
         }
 
-        // 저장
+        // 비밀번호 해시화 처리
+        final hash = BCrypt.hashpw(rawPassword, BCrypt.gensalt());  // 비밀번호 해시화
+        final authRef = db.collection('client_auth').doc(docId);
+        txn.set(authRef, {
+          'passwordHash': hash,  // 비밀번호 해시 저장
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        // 거래처 데이터 저장
         txn.set(clientRef, {
           ...data,
-          'clientCode': docId,                    // ← 필드명 통일
+          'clientCode': docId,                    // 필드명 통일
           'branchId': branchId,
           'createdAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),

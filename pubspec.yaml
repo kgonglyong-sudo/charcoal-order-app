@@ -17,10 +17,10 @@ dependencies:
   go_router: ^16.1.0
 
   # Firebase
-  firebase_core: ^3.6.0
-  cloud_firestore: ^5.4.4
-  firebase_storage: ^12.3.3
-  firebase_auth: ^5.3.3
+  firebase_core: ^3.6.0  # 최신 버전
+  cloud_firestore: ^5.4.4  # 최신 버전
+  firebase_storage: ^12.3.3  # 최신 버전
+  firebase_auth: ^5.3.3  # 최신 버전
 
   # UI / 유틸
   cupertino_icons: ^1.0.2
@@ -54,3 +54,4 @@ flutter:
     # ✅ CSV 파일(앱 내 업로더에서 사용)
     - assets/products_v2.csv
     - assets/variants_v2.csv
+   
