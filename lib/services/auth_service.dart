@@ -20,7 +20,7 @@ class AuthService with ChangeNotifier {
   // 프로필
   Client? _currentClient;   // client 전용 프로필 (branchId, priceTier, deliveryDays 등)
   String? _role;            // 'manager' | 'client' | 'admin'
-  String? _managerBranchId; // ✅ 매니저/관리자용 지점 ID 보관
+  String? _managerBranchId; // 매니저/관리자용 지점 ID 보관
 
   // getters
   bool get isLoading => _isLoading;
@@ -32,7 +32,7 @@ class AuthService with ChangeNotifier {
   // 편의 접근자 (역할에 따라 분기)
   String? get branchId {
     if (_role == 'client') return _currentClient?.branchId;
-    return _managerBranchId; // ✅ 매니저/관리자일 때 사용
+    return _managerBranchId; // 매니저/관리자일 때 사용
   }
 
   String? get clientCode => _currentClient?.code;
@@ -68,14 +68,14 @@ class AuthService with ChangeNotifier {
 
   // /user/{uid} 로드
   Future<void> _loadUserProfile(String uid) async {
-    final snap = await _db.collection('user').doc(uid).get(); // 규칙에 맞춰 'user'(단수)
+    final snap = await _db.collection('user').doc(uid).get();
     final data = snap.data() ?? {};
 
     _role = data['role'] as String?;
 
     if (_role == 'client') {
       // 클라이언트 프로필 로딩
-      _managerBranchId = null; // 혹시 이전 상태가 남아있지 않도록 초기화
+      _managerBranchId = null;
 
       final branchId = (data['branchId'] ?? '') as String;
       final code = (data['clientCode'] ?? '') as String;
@@ -114,58 +114,88 @@ class AuthService with ChangeNotifier {
   }
 
   // ------------------------------
-  // 거래처 코드 로그인
+  // 거래처 코드 로그인 (🔥 완전히 새로운 로직)
   // ------------------------------
-  Future<bool> login(String codeRaw, String branchIdRaw) async {
+  Future<bool> login(String codeRaw, String branchKeyRaw) async {
     final code = codeRaw.trim().toUpperCase();
-    final branchId = branchIdRaw.trim().toUpperCase(); // ✅ branchId를 여기서 선언하고 계속 사용
+    final branchKey = branchKeyRaw.trim().toUpperCase();
 
-    if (code.isEmpty || branchId.isEmpty) return false;
+    if (code.isEmpty || branchKey.isEmpty) {
+      hasError = true;
+      errorMessage = '거래처 코드와 지점 코드를 모두 입력해주세요.';
+      notifyListeners();
+      return false;
+    }
 
     _setLoading(true);
-    await Future.delayed(const Duration(milliseconds: 200));
-
+    hasError = false;
+    errorMessage = null;
+    
     try {
-      // 1) 익명 로그인 보장
-      User? u = _auth.currentUser;
-      u ??= (await _auth.signInAnonymously()).user;
-      if (u == null) throw Exception('익명 로그인 실패');
+      print('🔍 로그인 시도: branchKey=$branchKey, code=$code');
 
-      // 2) clients 컬렉션그룹에서 코드와 지점ID로 검색
-      final qs = await _db
-          .collectionGroup('clients')
-          .where('clientCode', isEqualTo: code)
-          .where('branchId', isEqualTo: branchId) // ✅ 입력받은 branchId로 필터링
+      // 1. 익명 로그인 보장
+      User? user = _auth.currentUser;
+      if (user == null) {
+        user = (await _auth.signInAnonymously()).user;
+        if (user == null) throw Exception('익명 로그인 실패');
+      }
+
+      // 2. branchKey로 지점 문서 찾기
+      final branchQuery = await _db
+          .collection('branches')
+          .where('branchKey', isEqualTo: branchKey)
           .limit(1)
           .get();
 
-      if (qs.docs.isEmpty) {
+      if (branchQuery.docs.isEmpty) {
         hasError = true;
-        errorMessage = '해당 코드의 거래처를 찾을 수 없습니다.';
+        errorMessage = '존재하지 않는 지점 코드입니다: $branchKey\n(사용 가능: GP, CC)';
         _isSignedIn = false;
         notifyListeners();
         return false;
       }
 
-      final clientDoc = qs.docs.first;
-      final data = clientDoc.data();
+      final branchDoc = branchQuery.docs.first;
+      final branchId = branchDoc.id;
+      final branchData = branchDoc.data() as Map<String, dynamic>;
       
-      // ✅ 불필요한 branchId 재선언 삭제. 위에서 정의한 branchId를 그대로 사용.
-      final name      = (data['name'] ?? '') as String;
-      final priceTier = ((data['priceTier'] ?? 'C') as String).toUpperCase();
+      print('✅ 지점 찾음: $branchId');
+      print('📋 지점 데이터: $branchData');
+
+      // 3. 해당 지점의 clients 하위 컬렉션에서 거래처 코드 검색
+      final clientDoc = await _db
+          .collection('branches')
+          .doc(branchId)
+          .collection('clients')
+          .doc(code)
+          .get();
+
+      if (!clientDoc.exists) {
+        hasError = true;
+        errorMessage = '존재하지 않는 거래처 코드입니다: $code\n지점: ${branchData['name']}';
+        _isSignedIn = false;
+        notifyListeners();
+        return false;
+      }
+
+      // 4. 클라이언트 데이터 파싱
+      final clientData = clientDoc.data() as Map<String, dynamic>;
+      final name = (clientData['name'] ?? '') as String;
+      final priceTier = ((clientData['priceTier'] ?? 'C') as String).toUpperCase();
 
       // 안전한 deliveryDays 파싱
-      final parsedDays = ((data['deliveryDays'] as List?)?.whereType<int>() ?? const <int>[])
+      final parsedDays = ((clientData['deliveryDays'] as List?)?.whereType<int>() ?? const <int>[])
           .where((e) => e >= 1 && e <= 7)
           .toList();
 
-      // 3) /user/{uid} 문서 "최초 1회 생성"
-      final userRef = _db.collection('user').doc(u.uid);
+      // 5. /user/{uid} 문서 "최초 1회 생성"
+      final userRef = _db.collection('user').doc(user.uid);
       final userSnap = await userRef.get();
       if (!userSnap.exists) {
         await userRef.set({
           'role': 'client',
-          'branchId': branchId, // ✅ 입력받은 branchId 저장
+          'branchId': branchId,
           'clientCode': code,
           'priceTier': priceTier,
           'name': name,
@@ -174,11 +204,11 @@ class AuthService with ChangeNotifier {
         });
       }
 
-      // 메모리 상태 갱신
+      // 6. 메모리 상태 갱신
       _currentClient = Client(
         code: code,
         name: name,
-        branchId: branchId, // ✅ 입력받은 branchId 사용
+        branchId: branchId,
         priceTier: priceTier,
         deliveryDays: parsedDays,
       );
@@ -187,12 +217,20 @@ class AuthService with ChangeNotifier {
       _isSignedIn = true;
       hasError = false;
       errorMessage = null;
+      
+      print('🎉 로그인 성공!');
+      print('👤 사용자 정보: ${_currentClient?.toString()}');
+      
       notifyListeners();
       return true;
+
     } catch (e) {
       hasError = true;
-      errorMessage = e.toString();
+      errorMessage = '로그인 중 오류가 발생했습니다: $e';
       _isSignedIn = false;
+      
+      print('❌ 로그인 오류: $e');
+      
       notifyListeners();
       return false;
     } finally {

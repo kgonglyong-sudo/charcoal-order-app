@@ -16,7 +16,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
 
   late final AnimationController _anim;
   late final _CharcoalParticles _particles;
-  String? _selectedBranchId = 'branch_김포지사'; // 기본 지점 설정
+  String? _selectedBranchId = 'GP'; // 🔥 기본값을 Firebase branchKey로 변경
 
   @override
   void initState() {
@@ -304,8 +304,9 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                               });
                             },
                             items: const [
-                              DropdownMenuItem(value: 'branch_김포지사', child: Text('김포지사')),
-                              DropdownMenuItem(value: 'branch_충청지사', child: Text('충청지사')),
+                              // 🔥 Firebase branchKey와 일치하도록 수정
+                              DropdownMenuItem(value: 'GP', child: Text('김포지사')),
+                              DropdownMenuItem(value: 'CC', child: Text('충청지사')),
                             ],
                           ),
                           const SizedBox(height: 12),

@@ -91,7 +91,11 @@ class _ClientListScreenState extends State<ClientListScreen> {
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => ClientEditScreen(code: code, initData: m),
+                          builder: (_) => ClientEditScreen(
+                            branchId: branchId, // 🔥 수정: branchId 추가
+                            code: code, 
+                            initData: m
+                          ),
                         ),
                       ),
                     );
@@ -105,7 +109,11 @@ class _ClientListScreenState extends State<ClientListScreen> {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const ClientEditScreen()),
+          MaterialPageRoute(
+            builder: (_) => ClientEditScreen(
+              branchId: branchId, // 🔥 수정: 새 거래처 추가 시 branchId 전달
+            )
+          ),
         ),
         icon: const Icon(Icons.add),
         label: const Text('거래처 추가'),
