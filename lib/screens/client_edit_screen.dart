@@ -55,23 +55,86 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
   void initState() {
     super.initState();
     _loadClientData();
-    // 🔥 branchId 디버그 출력
     print('🔥 현재 branchId: ${widget.branchId}');
+    print('🔥 새 거래처 여부: ${_isNewClient()}');
     
     if (_isNewClient()) {
-      // 🔥 바로 GP001로 설정
-      _codeController.text = 'GP001';
       _generateClientCode();
     }
   }
 
-  // 🔥 간단하게 수정된 코드 생성 함수
+  // 🔥 완전히 새로운 코드 생성 함수
   Future<void> _generateClientCode() async {
-    // 🔥 간단하게 GP001로 고정
-    setState(() {
-      _codeController.text = 'GP001';
-    });
-    print('🔥 코드 설정 완료: GP001');
+    try {
+      setState(() => _isLoading = true);
+      
+      final prefix = _getBranchPrefix(widget.branchId);
+      print('🔥 접두사: $prefix');
+      
+      final clientsRef = FirebaseFirestore.instance
+          .collection('branches')
+          .doc(widget.branchId)
+          .collection('clients');
+      
+      // 해당 접두사로 시작하는 마지막 코드 찾기
+      QuerySnapshot querySnapshot;
+      
+      if (prefix == 'GP') {
+        // GP 접두사: GP001, GP002, ...
+        querySnapshot = await clientsRef
+            .where('code', isGreaterThanOrEqualTo: 'GP000')
+            .where('code', isLessThan: 'GQ')
+            .orderBy('code', descending: true)
+            .limit(1)
+            .get();
+      } else if (prefix == 'CLIENT') {
+        // CLIENT 접두사: CLIENT001, CLIENT002, ...
+        querySnapshot = await clientsRef
+            .where('code', isGreaterThanOrEqualTo: 'CLIENT000')
+            .where('code', isLessThan: 'CLIENTZ')
+            .orderBy('code', descending: true)
+            .limit(1)
+            .get();
+      } else {
+        // 기타 접두사
+        querySnapshot = await clientsRef
+            .where('code', isGreaterThanOrEqualTo: '${prefix}000')
+            .where('code', isLessThan: '${prefix}Z')
+            .orderBy('code', descending: true)
+            .limit(1)
+            .get();
+      }
+      
+      int nextNumber = 1;
+      
+      if (querySnapshot.docs.isNotEmpty) {
+        final lastCode = querySnapshot.docs.first.data() as Map<String, dynamic>;
+        final codeValue = lastCode['code'] as String;
+        print('🔥 마지막 코드: $codeValue');
+        
+        // 숫자 부분 추출
+        final numberPart = codeValue.replaceFirst(prefix, '');
+        final lastNumber = int.tryParse(numberPart) ?? 0;
+        nextNumber = lastNumber + 1;
+      }
+      
+      final newCode = '$prefix${nextNumber.toString().padLeft(3, '0')}';
+      
+      setState(() {
+        _codeController.text = newCode;
+        _isLoading = false;
+      });
+      
+      print('🔥 생성된 새 코드: $newCode');
+      
+    } catch (e) {
+      print('🚨 코드 생성 에러: $e');
+      final prefix = _getBranchPrefix(widget.branchId);
+      setState(() {
+        _codeController.text = '${prefix}001';
+        _isLoading = false;
+      });
+    }
   }
 
   // 🔥 지사별 접두사 반환 함수
@@ -310,7 +373,7 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '현재 지사: ${widget.branchId} | 접두사: ${_getBranchPrefix(widget.branchId)}',
+                        '현재 지사: ${widget.branchId} | 접두사: ${_getBranchPrefix(widget.branchId)} | 새 거래처: ${_isNewClient()}',
                         style: TextStyle(
                           color: Colors.blue.shade700,
                           fontSize: 12,
@@ -379,6 +442,7 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
             Row(
               children: [
                 Expanded(
+                  flex: 3,
                   child: TextFormField(
                     controller: _codeController,
                     decoration: InputDecoration(
@@ -401,8 +465,30 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                     },
                   ),
                 ),
+                if (_isNewClient()) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 1,
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _generateClientCode,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange.shade100,
+                        foregroundColor: Colors.orange.shade700,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                      child: _isLoading 
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('재생성', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ],
                 const SizedBox(width: 16),
                 Expanded(
+                  flex: 3,
                   child: TextFormField(
                     controller: _nameController,
                     decoration: const InputDecoration(
@@ -507,6 +593,8 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
   }
 
   Widget _buildPasswordSection() {
+    print('🔥 비밀번호 섹션 빌드 - 새 거래처: ${_isNewClient()}, 비밀번호 변경: $_changePassword');
+    
     return Card(
       elevation: 2,
       child: Padding(
@@ -514,6 +602,7 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 🔥 기존 거래처 수정 시에만 비밀번호 변경 스위치 표시
             if (!_isNewClient()) ...[
               SwitchListTile(
                 title: const Text('비밀번호 변경'),
@@ -533,6 +622,7 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
               const SizedBox(height: 16),
             ],
             
+            // 🔥 새 거래처이거나 비밀번호 변경이 체크된 경우 비밀번호 입력 필드 표시
             if (_isNewClient() || _changePassword) ...[
               TextFormField(
                 controller: _passwordController,
@@ -553,15 +643,17 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                   ),
                   border: const OutlineInputBorder(),
                 ),
-                validator: (_isNewClient() || _changePassword) ? (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return '비밀번호를 입력하세요';
-                  }
-                  if (value.length < 4) {
-                    return '비밀번호는 최소 4자 이상이어야 합니다';
+                validator: (value) {
+                  if (_isNewClient() || _changePassword) {
+                    if (value == null || value.trim().isEmpty) {
+                      return '비밀번호를 입력하세요';
+                    }
+                    if (value.length < 4) {
+                      return '비밀번호는 최소 4자 이상이어야 합니다';
+                    }
                   }
                   return null;
-                } : null,
+                },
               ),
               const SizedBox(height: 16),
               
@@ -584,15 +676,17 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                   ),
                   border: const OutlineInputBorder(),
                 ),
-                validator: (_isNewClient() || _changePassword) ? (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return '비밀번호 확인을 입력하세요';
-                  }
-                  if (value != _passwordController.text) {
-                    return '비밀번호가 일치하지 않습니다';
+                validator: (value) {
+                  if (_isNewClient() || _changePassword) {
+                    if (value == null || value.trim().isEmpty) {
+                      return '비밀번호 확인을 입력하세요';
+                    }
+                    if (value != _passwordController.text) {
+                      return '비밀번호가 일치하지 않습니다';
+                    }
                   }
                   return null;
-                } : null,
+                },
               ),
               
               const SizedBox(height: 12),
@@ -620,6 +714,7 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                 ),
               ),
             ] else ...[
+              // 🔥 기존 거래처이고 비밀번호 변경이 체크되지 않은 경우
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -747,58 +842,4 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                   _discountRate = double.tryParse(value) ?? 0.0;
                 },
                 validator: _allowDiscount ? (value) {
-                  final rate = double.tryParse(value ?? '');
-                  if (rate != null && (rate < 0 || rate > 100)) {
-                    return '할인율은 0~100% 사이여야 합니다';
-                  }
-                  return null;
-                } : null,
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSaveButton() {
-    return SizedBox(
-      width: double.infinity,
-      height: 50,
-      child: ElevatedButton(
-        onPressed: _isLoading ? null : _saveClient,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.orange,
-          foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
-        ),
-        child: _isLoading
-            ? const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                    ),
-                  ),
-                  SizedBox(width: 12),
-                  Text('저장 중...'),
-                ],
-              )
-            : Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.save),
-                  const SizedBox(width: 8),
-                  Text(_isNewClient() ? '거래처 등록' : '수정 완료'),
-                ],
-              ),
-      ),
-    );
-  }
-}
+                  final rate = double.tryParse(value ?? '
