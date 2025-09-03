@@ -26,12 +26,29 @@ class _ProductListScreenState extends State<ProductListScreen> {
   @override
   void initState() {
     super.initState();
-    _loadProducts();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadProducts();
+    });
   }
 
   Future<void> _loadProducts() async {
+    final authService = context.read<AuthService>();
+    final client = authService.currentClient;
+
+    // ✨ 수정된 부분: client가 null인지만 확인합니다.
+    if (client == null) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('사용자 정보를 찾을 수 없습니다. 다시 로그인해주세요.')),
+      );
+      return;
+    }
+
     try {
-      final products = await _databaseService.getProducts();
+      // ✨ 수정된 부분: userRole을 'client'로 직접 지정합니다.
+      final products = await _databaseService.getProducts(userRole: 'client');
+      
       if (!mounted) return;
       setState(() {
         _products = products;
@@ -40,8 +57,12 @@ class _ProductListScreenState extends State<ProductListScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
+      String errorMessage = '상품을 불러오는데 실패했습니다: $e';
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        errorMessage = '상품 목록을 볼 수 있는 권한이 없습니다. 관리자에게 문의하세요.';
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('상품을 불러오는데 실패했습니다: $e')),
+        SnackBar(content: Text(errorMessage)),
       );
     }
   }
@@ -144,12 +165,14 @@ class _ProductListScreenState extends State<ProductListScreen> {
                     if (snap.connectionState == ConnectionState.waiting) {
                       return const Center(child: CircularProgressIndicator());
                     }
+                    if (snap.hasError) {
+                      return Center(child: Text('가격을 계산하는 중 오류가 발생했습니다: ${snap.error}'));
+                    }
                     if (!snap.hasData) {
                       return const Center(child: Text('가격 정보를 불러오지 못했습니다.'));
                     }
                     final pctx = snap.data!;
-
-                    // 0원 제품은 숨기기 (표준/개별단가 모두 없으면 비표시)
+                    
                     final visible = _products.where((p) {
                       final priceOrNull = pctx.displayPriceOrNull(p.id);
                       return priceOrNull != null && priceOrNull > 0;
@@ -157,7 +180,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
 
                     return Column(
                       children: [
-                        // 상단 고객/소속/다음 배송일 정보
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(16),
@@ -181,8 +203,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
                             ],
                           ),
                         ),
-
-                        // 리스트
                         Expanded(
                           child: visible.isEmpty
                               ? const Center(child: Text('표시할 상품이 없습니다.\n(표준단가/개별단가를 확인하세요)'))
@@ -195,7 +215,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
 
                                     final hasVariants = pctx.hasVariants(pid);
                                     final unitPrice =
-                                        pctx.displayPriceOrNull(pid) ?? 0; // 변형있으면 첫 활성 변형 기준가
+                                        pctx.displayPriceOrNull(pid) ?? 0;
                                     final priceText = _won(unitPrice);
 
                                     return Card(
@@ -220,7 +240,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
                                         trailing: ElevatedButton(
                                           onPressed: () async {
                                             if (!hasVariants) {
-                                              // 변형 없음: 바로 담기 (표시 가격 사용)
                                               context
                                                   .read<CartService>()
                                                   .addItemWithPrice(product, unitPrice);
@@ -231,7 +250,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
                                                 ),
                                               );
                                             } else {
-                                              // 변형 있음: 하단 시트로 사이즈 선택
                                               final choice = await _pickVariant(context, pctx, product);
                                               if (choice == null) return;
                                               final displayName = '${product.name} (${choice.label})';
@@ -267,7 +285,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
     );
   }
 
-  /// 변형 선택
   Future<_VariantChoice?> _pickVariant(
       BuildContext context, _PricingCtx pctx, Product product) async {
     final options = pctx.variantPriceList(product.id);
@@ -313,14 +330,12 @@ class _ProductListScreenState extends State<ProductListScreen> {
     );
   }
 
-  /// 클라이언트 개별단가 + products(+variants) map 로드
   Future<_PricingCtx> _loadPricingCtxForList({
     required String branchId,
     required String clientCode,
     required String clientTier,
     required List<Product> products,
   }) async {
-    // 1) 개별단가(클라이언트 문서) 로드
     final cRef = FirebaseFirestore.instance
         .collection('branches')
         .doc(branchId)
@@ -332,13 +347,11 @@ class _ProductListScreenState extends State<ProductListScreen> {
     final overridesV2 =
         Map<String, dynamic>.from((cSnap.data()?['priceOverridesV2'] as Map?) ?? const {});
 
-    // 2) 상품 + 변형 데이터 로드
     final prodCol = FirebaseFirestore.instance.collection('products');
     final maps = <String, Map<String, dynamic>>{};
     for (final p in products) {
       final ds = await prodCol.doc(p.id).get();
       final pm = Map<String, dynamic>.from(ds.data() ?? const {});
-      // variants 로드(정렬)
       final vSnap = await prodCol.doc(p.id).collection('variants').get();
       final vdocs = vSnap.docs.toList()
         ..sort((a, b) {
@@ -364,7 +377,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
   }
 }
 
-/// 변형 선택용 VO
 class _VariantChoice {
   _VariantChoice({required this.vid, required this.label, required this.price});
   final String vid;
@@ -372,12 +384,11 @@ class _VariantChoice {
   final int price;
 }
 
-/// 가격 컨텍스트(개별단가/표준단가/상품(+variants))
 class _PricingCtx {
   final String clientTier;
-  final Map<String, dynamic> overridesLegacy; // pid -> int
-  final Map<String, dynamic> overridesV2; // 'pid|vid' -> int
-  final Map<String, Map<String, dynamic>> products; // pid -> product map
+  final Map<String, dynamic> overridesLegacy;
+  final Map<String, dynamic> overridesV2;
+  final Map<String, Map<String, dynamic>> products;
   _PricingCtx({
     required this.clientTier,
     required this.overridesLegacy,
@@ -390,13 +401,11 @@ class _PricingCtx {
     return v is List && v.isNotEmpty;
   }
 
-  /// 카드에 표시할 1개 가격(변형 있으면 첫 활성 변형의 가격)
   int? displayPriceOrNull(String pid) {
     final pm = products[pid] ?? const {};
     final variants = (pm['variants'] as List?)?.cast<Map>() ?? const [];
 
     if (variants.isEmpty) {
-      // 변형 없음 → 기존 로직(구버전 포함)
       return Pricing.effectivePrice(
         pid: pid,
         product: pm,
@@ -405,13 +414,13 @@ class _PricingCtx {
       );
     }
 
-    // 변형 있음 → 첫 활성 변형 기준
     for (final v in variants) {
       final active = (v['active'] ?? true) == true;
       if (!active) continue;
       final vid = (v['id'] as String?) ?? '';
       final gp = Map<String, dynamic>.from(v['gradePrices'] ?? const {});
       final base = _asInt(gp[clientTier]);
+      // ✨ 수정된 부분: 불필요한 '[' 제거
       final ov = _asInt(overridesV2['$pid|$vid']);
       final price = (ov != 0 ? ov : base);
       if (price > 0) return price;
@@ -419,7 +428,6 @@ class _PricingCtx {
     return null;
   }
 
-  /// 변형별 가격 리스트(활성만)
   List<_VariantChoice> variantPriceList(String pid) {
     final pm = products[pid] ?? const {};
     final variants = (pm['variants'] as List?)?.cast<Map>() ?? const [];
@@ -436,6 +444,7 @@ class _PricingCtx {
 
       final gp = Map<String, dynamic>.from(v['gradePrices'] ?? const {});
       final base = _asInt(gp[clientTier]);
+      // ✨ 수정된 부분: 불필요한 '[' 제거
       final ov = _asInt(overridesV2['$pid|$vid']);
       final price = (ov != 0 ? ov : base);
       if (price > 0) {

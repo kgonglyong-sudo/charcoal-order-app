@@ -1,3 +1,4 @@
+// lib/screens/login_screen.dart
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -16,7 +17,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
 
   late final AnimationController _anim;
   late final _CharcoalParticles _particles;
-  String? _selectedBranchId = 'GP'; // 🔥 기본값을 Firebase branchKey로 변경
+  String? _selectedBranchId = 'CC';
 
   @override
   void initState() {
@@ -26,7 +27,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       duration: const Duration(milliseconds: 2400),
     )..repeat();
 
-    // 🔴 입자를 빨간색 계열로 변경
     _particles = _CharcoalParticles(
       spawnAreaPadding: 24,
       particleCount: 140,
@@ -37,8 +37,8 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       swirlStrength: 0.35,
       verticalDrift: -1.0,
       alphaMinMax: (0.10, 0.40),
-      hue: Colors.redAccent,          // ← 기본 입자색 (빨강)
-      glowColor: Colors.amberAccent,  // ← 살짝 노란 글로우
+      hue: Colors.redAccent,
+      glowColor: Colors.amberAccent,
     );
 
     _anim.addListener(() {
@@ -55,12 +55,19 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
 
   Future<void> _loginWithCode() async {
     final code = _clientCodeController.text.trim();
-    if (code.isEmpty || _selectedBranchId == null) return _toast('거래처 코드와 지점을 선택해주세요');
+    if (code.isEmpty) return _toast('거래처 코드를 입력해주세요');
+    
     setState(() => _isCodeLoading = true);
+    
     try {
-      final ok = await context.read<AuthService>().login(code, _selectedBranchId!);
-      if (!ok) _toast('잘못된 거래처 코드입니다');
+      // ✅ `loginWithCode` 대신 `login` 함수를 호출하도록 수정
+      final ok = await context.read<AuthService>().login(code);
+      if (!mounted) return;
+      if (!ok) {
+        _toast('잘못된 거래처 코드입니다');
+      }
     } catch (e) {
+      if (!mounted) return;
       _toast('로그인 오류: $e');
     } finally {
       if (mounted) setState(() => _isCodeLoading = false);
@@ -79,6 +86,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         bool loading = false;
 
         Future<void> doLogin(StateSetter setSBState) async {
+          print('✅ 1단계: 이메일 로그인 버튼 눌림!');
           final email = emailCtrl.text.trim();
           final pw = pwCtrl.text;
           if (email.isEmpty || pw.isEmpty) {
@@ -90,6 +98,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
             await context.read<AuthService>().signInWithEmail(email, pw);
             if (mounted) Navigator.of(context).pop();
           } catch (e) {
+            print('❌ login_screen에서 에러 발견: $e');
             _toast('이메일 로그인 실패: $e');
           } finally {
             if (mounted) setSBState(() => loading = false);
@@ -152,7 +161,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1) 배경 이미지
           Container(
             decoration: const BoxDecoration(
               image: DecorationImage(
@@ -162,18 +170,14 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
               ),
             ),
           ),
-
-          // 2) 하단 불꽃 그라데이션 높이를 크게(텍스트 라인까지) 올림
           AnimatedBuilder(
             animation: _anim,
             builder: (context, _) {
-              final t = _anim.value; // 0..1
+              final t = _anim.value;
               final screenH = MediaQuery.of(context).size.height;
-              // 화면 높이의 약 50%까지 채우도록(약간의 펄스)
-              final baseRatio = 0.50; // ← 여기 값을 0.45~0.60 사이로 조절하면 범위 바뀜
+              final baseRatio = 0.50;
               final pulse = 0.03 * math.sin(t * math.pi * 2);
               final h = screenH * (baseRatio + pulse);
-
               final alpha = 0.70 + 0.15 * math.sin(t * math.pi * 2 + 1.2);
               return Align(
                 alignment: Alignment.bottomCenter,
@@ -185,7 +189,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                         begin: Alignment.bottomCenter,
                         end: Alignment.topCenter,
                         colors: [
-                          // 🔥 더 노란/빨강 느낌으로 상향
                           Colors.amber.withOpacity(alpha),
                           deepOrange.withOpacity(alpha * 0.85),
                           orange.withOpacity(alpha * 0.55),
@@ -199,8 +202,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
               );
             },
           ),
-
-          // 3) 글로우 스팟 (노란톤 강화)
           AnimatedBuilder(
             animation: _anim,
             builder: (context, _) {
@@ -223,8 +224,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
               );
             },
           ),
-
-          // 4) 빨간 입자
           RepaintBoundary(
             child: AnimatedBuilder(
               animation: _anim,
@@ -234,8 +233,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
               ),
             ),
           ),
-
-          // 5) 내용(로고/로그인 카드)
           Center(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24),
@@ -266,7 +263,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                       style: TextStyle(fontSize: 14, color: Colors.white70),
                     ),
                     const SizedBox(height: 24),
-
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
@@ -296,19 +292,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                             onSubmitted: (_) => _loginWithCode(),
                           ),
                           const SizedBox(height: 12),
-                          DropdownButton<String>(
-                            value: _selectedBranchId,
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedBranchId = value;
-                              });
-                            },
-                            items: const [
-                              // 🔥 Firebase branchKey와 일치하도록 수정
-                              DropdownMenuItem(value: 'GP', child: Text('김포지사')),
-                              DropdownMenuItem(value: 'CC', child: Text('충청지사')),
-                            ],
-                          ),
                           const SizedBox(height: 12),
                           SizedBox(
                             width: double.infinity,
@@ -328,8 +311,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                                       width: 20,
                                       child: CircularProgressIndicator(
                                         strokeWidth: 2,
-                                        valueColor:
-                                            AlwaysStoppedAnimation(Colors.white),
+                                        valueColor: AlwaysStoppedAnimation(Colors.white),
                                       ),
                                     )
                                   : const Text(
@@ -401,10 +383,6 @@ class _GlowSpot extends StatelessWidget {
   }
 }
 
-/* =========================
-   파티클 시스템 (빨간 입자)
-   ========================= */
-
 class _CharcoalParticles {
   _CharcoalParticles({
     required this.spawnAreaPadding,
@@ -441,7 +419,6 @@ class _CharcoalParticles {
     if (_ps.isNotEmpty && _lastSize == size) return;
     _ps.clear();
     _lastSize = size;
-
     final w = size.width;
     final h = size.height;
     for (int i = 0; i < particleCount; i++) {
@@ -454,15 +431,12 @@ class _CharcoalParticles {
     final y = randomY
         ? h - _rand.nextDouble() * (h * 0.65)
         : h - (spawnAreaPadding + _rand.nextDouble() * 40);
-
     final speed = baseSpeed + (_rand.nextDouble() * 2 - 1) * speedJitter;
     final size = (baseSize + _rand.nextDouble() * sizeJitter).clamp(1.0, 8.0);
     final alpha = _lerp(alphaMinMax.$1, alphaMinMax.$2, _rand.nextDouble());
     final life = 3.0 + _rand.nextDouble() * 3.0;
-
     final dirX = (_rand.nextDouble() * 2 - 1) * 0.6;
     final dirY = verticalDrift;
-
     return _P(
       x: x,
       y: y,
@@ -484,21 +458,16 @@ class _CharcoalParticles {
     final dt = (now - _lastTime).inMilliseconds / 1000.0;
     _lastTime = now;
     if (_lastSize == Size.zero) return;
-
     final w = _lastSize.width;
     final h = _lastSize.height;
-
     for (int i = 0; i < _ps.length; i++) {
       final p = _ps[i];
-
       final s = p.swirlSeed;
       final swirlX = math.sin((p.age + s) * 1.6) * swirlStrength;
       final swirlY = math.cos((p.age + s) * 1.2) * swirlStrength * 0.6;
-
       p.x += (p.vx + swirlX) * dt * 10;
       p.y += (p.vy + swirlY) * dt * 10;
       p.age += dt;
-
       final outOfBound = p.x < -20 || p.x > w + 20 || p.y < -40 || p.y > h + 20;
       if (p.age > p.life || outOfBound) {
         _ps[i] = _spawn(w, h, randomY: false);
@@ -509,17 +478,14 @@ class _CharcoalParticles {
   void paint(Canvas canvas, Size size) {
     _ensureInit(size);
     final paint = Paint()..style = PaintingStyle.fill;
-
     for (final p in _ps) {
       final t = (1.0 - (p.age / p.life)).clamp(0.0, 1.0);
       final a = p.alpha * (0.2 + 0.8 * t);
-
-      paint.color = hue.withOpacity(a); // 본체(빨강)
+      paint.color = hue.withOpacity(a);
       canvas.drawCircle(Offset(p.x, p.y), p.size, paint);
-
       final glowA = (a * 0.25).clamp(0.0, 0.3);
       if (glowA > 0) {
-        paint.color = glowColor.withOpacity(glowA); // 노란 글로우
+        paint.color = glowColor.withOpacity(glowA);
         canvas.drawCircle(Offset(p.x, p.y), p.size * 1.6, paint);
       }
     }

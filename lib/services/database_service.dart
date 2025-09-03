@@ -12,7 +12,7 @@ class DatabaseService {
     Product(id: 'P001', name: '라오스비장탄', prices: {'A': 21000, 'B': 22000, 'C': 21500}, emoji: '🪵'),
     Product(id: 'P002', name: '리치 비장탄', prices: {'A': 19000, 'B': 20000, 'C': 19500}, emoji: '🪵'),
     Product(id: 'P003', name: '두번구운 라오스', prices: {'A': 21000, 'B': 20000, 'C': 19000}, emoji: '⚫'),
-    Product(id: 'P004', name: '열탄',       prices: {'A': 12000, 'B': 11500, 'C': 12000}, emoji: '⚫'),
+    Product(id: 'P004', name: '열탄',      prices: {'A': 12000, 'B': 11500, 'C': 12000}, emoji: '⚫'),
     Product(id: 'P005', name: '대나무숯',   prices: {'A': 13500, 'B': 14500, 'C': 15000}, emoji: '🎋'),
   ];
 
@@ -30,11 +30,18 @@ class DatabaseService {
     ),
   ];
 
-  // ===== 상품: 전사 공용 products 컬렉션 사용 =====
-  Future<List<Product>> getProducts() async {
+  // ==================== 👇 여기가 수정된 부분입니다 👇 ====================
+  // ===== 상품: 역할에 따라 데이터 로딩 분기 =====
+  Future<List<Product>> getProducts({required String userRole}) async {
     try {
-      // 정렬은 sortOrder 기준, 이름 보조정렬은 메모리에서 처리
       final snap = await _db.collection('products').orderBy('sortOrder').get();
+      
+      // manager나 admin일 경우, productSecrets 정보도 함께 가져옵니다.
+      Map<String, Map<String, dynamic>> secrets = {};
+      if (userRole == 'manager' || userRole == 'admin') {
+        final secretSnap = await _db.collection('productSecrets').get();
+        secrets = {for (var doc in secretSnap.docs) doc.id: doc.data()};
+      }
 
       int _asInt(dynamic v) => v is num ? v.toInt() : (int.tryParse('$v') ?? 0);
 
@@ -54,7 +61,6 @@ class DatabaseService {
       for (final d in docs) {
         final m = d.data();
 
-        // 삭제/비활성 제외(클라이언트 필터)
         if (m['deletedAt'] != null) continue;
         if ((m['active'] ?? true) == false) continue;
 
@@ -64,22 +70,23 @@ class DatabaseService {
         final name = (nameKo?.isNotEmpty == true)
             ? nameKo!
             : (nameEn?.isNotEmpty == true ? nameEn! : id);
-
         final emoji = (m['emoji'] as String?)?.trim() ?? '🧱';
+        
+        // Product 모델이 secrets 데이터를 받을 수 있도록
+        // product 데이터와 secret 데이터를 합쳐줍니다.
+        final combinedData = {...m, ...(secrets[id] ?? {})};
 
-        // 표준단가 맵 변환 (prices.{A,B,C} 우선, 없으면 priceA/B/C 폴백)
         final pricesMap = <String, int>{'A': 0, 'B': 0, 'C': 0};
-        final pricesRaw = (m['prices'] as Map?) ?? const {};
+        final pricesRaw = (combinedData['prices'] as Map?) ?? const {};
         int _pick(Map src, String key, dynamic legacy) {
           final v = src[key] ?? src[key.toUpperCase()];
           if (v is num) return v.toInt();
           if (legacy is num) return (legacy as num).toInt();
           return 0;
         }
-
-        pricesMap['A'] = _pick(pricesRaw, 'A', m['priceA']);
-        pricesMap['B'] = _pick(pricesRaw, 'B', m['priceB']);
-        pricesMap['C'] = _pick(pricesRaw, 'C', m['priceC']);
+        pricesMap['A'] = _pick(pricesRaw, 'A', combinedData['priceA']);
+        pricesMap['B'] = _pick(pricesRaw, 'B', combinedData['priceB']);
+        pricesMap['C'] = _pick(pricesRaw, 'C', combinedData['priceC']);
 
         out.add(Product(
           id: id,
@@ -89,15 +96,15 @@ class DatabaseService {
         ));
       }
 
-      // 비어있으면 샘플로 폴백(초기 세팅 단계 대비)
       if (out.isEmpty) return _sampleProducts;
-
       return out;
-    } catch (_) {
-      // 에러시 샘플 폴백
+    } catch (e) {
+      print('Failed to get products: $e');
       return _sampleProducts;
     }
   }
+  // ==================== 👆 여기까지가 수정된 부분입니다 👆 ====================
+
 
   // ===== (기존) 목데이터 주문 =====
   Future<List<Order>> getOrders(String clientCode) async {

@@ -1,7 +1,8 @@
+// lib/screens/client_edit_screen.dart
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:crypto/crypto.dart';
-import 'dart:convert';
+import 'package:provider/provider.dart';
+import '../services/auth_service.dart';
 
 class ClientEditScreen extends StatefulWidget {
   final String branchId;
@@ -21,8 +22,8 @@ class ClientEditScreen extends StatefulWidget {
 
 class _ClientEditScreenState extends State<ClientEditScreen> {
   final _formKey = GlobalKey<FormState>();
-  
-  // 기본 정보 컨트롤러
+
+  // 컨트롤러
   final _codeController = TextEditingController();
   final _nameController = TextEditingController();
   final _phoneController = TextEditingController();
@@ -31,142 +32,24 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
   final _emailController = TextEditingController();
   final _notesController = TextEditingController();
   
-  // 비밀번호 컨트롤러
-  final _passwordController = TextEditingController();
-  final _confirmPasswordController = TextEditingController();
-  
   // 상태 변수
+  String _priceTier = 'C';
+  List<int> _deliveryDays = [];
   bool _isActive = true;
   bool _isLoading = false;
-  bool _isPasswordVisible = false;
-  bool _isConfirmPasswordVisible = false;
-  bool _changePassword = false;
-  
-  // 거래 조건
-  String _paymentMethod = 'cash';
-  double _creditLimit = 0.0;
-  int _paymentTerms = 0;
-  
-  // 할인 정보
-  double _discountRate = 0.0;
-  bool _allowDiscount = false;
 
   @override
   void initState() {
     super.initState();
     _loadClientData();
-    print('🔥 현재 branchId: ${widget.branchId}');
-    print('🔥 새 거래처 여부: ${_isNewClient()}');
-    
-    if (_isNewClient()) {
-      _generateClientCode();
-    }
-  }
-
-  // 🔥 완전히 새로운 코드 생성 함수
-  Future<void> _generateClientCode() async {
-    try {
-      setState(() => _isLoading = true);
-      
-      final prefix = _getBranchPrefix(widget.branchId);
-      print('🔥 접두사: $prefix');
-      
-      final clientsRef = FirebaseFirestore.instance
-          .collection('branches')
-          .doc(widget.branchId)
-          .collection('clients');
-      
-      // 해당 접두사로 시작하는 마지막 코드 찾기
-      QuerySnapshot querySnapshot;
-      
-      if (prefix == 'GP') {
-        // GP 접두사: GP001, GP002, ...
-        querySnapshot = await clientsRef
-            .where('code', isGreaterThanOrEqualTo: 'GP000')
-            .where('code', isLessThan: 'GQ')
-            .orderBy('code', descending: true)
-            .limit(1)
-            .get();
-      } else if (prefix == 'CLIENT') {
-        // CLIENT 접두사: CLIENT001, CLIENT002, ...
-        querySnapshot = await clientsRef
-            .where('code', isGreaterThanOrEqualTo: 'CLIENT000')
-            .where('code', isLessThan: 'CLIENTZ')
-            .orderBy('code', descending: true)
-            .limit(1)
-            .get();
-      } else {
-        // 기타 접두사
-        querySnapshot = await clientsRef
-            .where('code', isGreaterThanOrEqualTo: '${prefix}000')
-            .where('code', isLessThan: '${prefix}Z')
-            .orderBy('code', descending: true)
-            .limit(1)
-            .get();
-      }
-      
-      int nextNumber = 1;
-      
-      if (querySnapshot.docs.isNotEmpty) {
-        final lastCode = querySnapshot.docs.first.data() as Map<String, dynamic>;
-        final codeValue = lastCode['code'] as String;
-        print('🔥 마지막 코드: $codeValue');
-        
-        // 숫자 부분 추출
-        final numberPart = codeValue.replaceFirst(prefix, '');
-        final lastNumber = int.tryParse(numberPart) ?? 0;
-        nextNumber = lastNumber + 1;
-      }
-      
-      final newCode = '$prefix${nextNumber.toString().padLeft(3, '0')}';
-      
-      setState(() {
-        _codeController.text = newCode;
-        _isLoading = false;
-      });
-      
-      print('🔥 생성된 새 코드: $newCode');
-      
-    } catch (e) {
-      print('🚨 코드 생성 에러: $e');
-      final prefix = _getBranchPrefix(widget.branchId);
-      setState(() {
-        _codeController.text = '${prefix}001';
-        _isLoading = false;
-      });
-    }
-  }
-
-  // 🔥 지사별 접두사 반환 함수
-  String _getBranchPrefix(String branchId) {
-    // 영어 branchId와 한글 branchId 모두 대응
-    switch (branchId.toLowerCase()) {
-      case 'gimpo':
-      case '김포지사':
-      case 'gimpo_branch':
-        return 'GP';
-      case 'chungcheong':
-      case '충청지사':
-      case 'chungcheong_branch':
-        return 'CLIENT';
-      case 'seoul':
-      case '서울지사':
-      case 'seoul_branch':
-        return 'SEL';
-      case 'busan':
-      case '부산지사':
-      case 'busan_branch':
-        return 'BS';
-      default:
-        print('🚨 알 수 없는 branchId: $branchId, 기본값 CLI 사용');
-        return 'CLI';
-    }
   }
 
   void _loadClientData() {
-    if (widget.initData != null) {
+    if (_isNewClient()) {
+      _codeController.text = '(자동 생성)';
+    } else {
       final data = widget.initData!;
-      _codeController.text = data['code'] ?? '';
+      _codeController.text = widget.code ?? '';
       _nameController.text = data['name'] ?? '';
       _phoneController.text = data['phone'] ?? '';
       _addressController.text = data['address'] ?? '';
@@ -174,11 +57,8 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
       _emailController.text = data['email'] ?? '';
       _notesController.text = data['notes'] ?? '';
       _isActive = data['isActive'] ?? true;
-      _paymentMethod = data['paymentMethod'] ?? 'cash';
-      _creditLimit = (data['creditLimit'] ?? 0.0).toDouble();
-      _paymentTerms = data['paymentTerms'] ?? 0;
-      _discountRate = (data['discountRate'] ?? 0.0).toDouble();
-      _allowDiscount = data['allowDiscount'] ?? false;
+      _priceTier = data['priceTier'] ?? 'C';
+      _deliveryDays = List<int>.from(data['deliveryDays'] ?? []);
     }
   }
 
@@ -191,102 +71,87 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
     _contactPersonController.dispose();
     _emailController.dispose();
     _notesController.dispose();
-    _passwordController.dispose();
-    _confirmPasswordController.dispose();
     super.dispose();
-  }
-
-  String _hashPassword(String password) {
-    final bytes = utf8.encode(password);
-    final digest = sha256.convert(bytes);
-    return digest.toString();
   }
 
   Future<void> _saveClient() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // 비밀번호 확인
-    if (_isNewClient() || _changePassword) {
-      if (_passwordController.text.trim().isEmpty) {
-        _showErrorDialog('비밀번호를 입력하세요');
-        return;
-      }
-      if (_passwordController.text != _confirmPasswordController.text) {
-        _showErrorDialog('비밀번호가 일치하지 않습니다');
-        return;
-      }
-      if (_passwordController.text.length < 4) {
-        _showErrorDialog('비밀번호는 최소 4자 이상이어야 합니다');
-        return;
-      }
-    }
-
     setState(() => _isLoading = true);
-
+    
+    // ==================== 👇 여기가 수정된 부분입니다 👇 ====================
     try {
-      print('🔥 저장 시작 - branchId: ${widget.branchId}');
+      final authService = context.read<AuthService>(listen: false);
       
-      final clientData = {
-        'code': _codeController.text.trim().toUpperCase(),
-        'name': _nameController.text.trim(),
-        'nameLower': _nameController.text.trim().toLowerCase(),
-        'phone': _phoneController.text.trim(),
-        'address': _addressController.text.trim(),
-        'contactPerson': _contactPersonController.text.trim(),
-        'email': _emailController.text.trim(),
-        'notes': _notesController.text.trim(),
-        'isActive': _isActive,
-        'paymentMethod': _paymentMethod,
-        'creditLimit': _creditLimit,
-        'paymentTerms': _paymentTerms,
-        'discountRate': _discountRate,
-        'allowDiscount': _allowDiscount,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-
-      // 비밀번호 처리
-      if (_isNewClient() || _changePassword) {
-        clientData['passwordHash'] = _hashPassword(_passwordController.text.trim());
-      }
-
-      final clientsRef = FirebaseFirestore.instance
-          .collection('branches')
-          .doc(widget.branchId)
-          .collection('clients');
-
       if (_isNewClient()) {
-        // 거래처 코드 중복 확인
-        final existingClient = await clientsRef
-            .where('code', isEqualTo: _codeController.text.trim().toUpperCase())
-            .limit(1)
-            .get();
-
-        if (existingClient.docs.isNotEmpty) {
-          _showErrorDialog('이미 존재하는 거래처 코드입니다');
-          return;
-        }
-
-        clientData['createdAt'] = FieldValue.serverTimestamp();
-        await clientsRef.doc(_codeController.text.trim().toUpperCase()).set(clientData);
+        final branchKey = _getBranchPrefix(widget.branchId);
         
-        print('🔥 거래처 저장 완료: ${_codeController.text}');
-        _showSuccessDialog('거래처가 성공적으로 등록되었습니다');
+        final newCode = await authService.createClientAuto(
+          branchKey: branchKey,
+          name: _nameController.text.trim(),
+          priceTier: _priceTier,
+          deliveryDays: _deliveryDays,
+        );
+        print('✅ AuthService를 통해 거래처 생성 성공: $newCode');
+        _showSuccessDialog('거래처가 성공적으로 등록되었습니다: $newCode');
       } else {
-        await clientsRef.doc(widget.code).update(clientData);
+        final clientsRef = FirebaseFirestore.instance
+            .collection('branches')
+            .doc(widget.branchId)
+            .collection('clients');
+            
+        await clientsRef.doc(widget.code).update({
+          'name': _nameController.text.trim(),
+          'nameLower': _nameController.text.trim().toLowerCase(),
+          'phone': _phoneController.text.trim(),
+          'address': _addressController.text.trim(),
+          'contactPerson': _contactPersonController.text.trim(),
+          'email': _emailController.text.trim(),
+          'notes': _notesController.text.trim(),
+          'isActive': _isActive,
+          'priceTier': _priceTier,
+          'deliveryDays': _deliveryDays,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
         _showSuccessDialog('거래처 정보가 성공적으로 수정되었습니다');
       }
-
-    } catch (e) {
-      print('🚨 저장 에러: $e');
-      _showErrorDialog('저장 중 오류가 발생했습니다: $e');
+    } catch (e, stackTrace) { // ✨ e와 함께 stackTrace를 잡도록 변경
+      // ✨✨✨ 정밀 탐지기 ✨✨✨
+      print('🔥🔥🔥 거래처 저장 최종 에러 🔥🔥🔥');
+      print('에러 타입: ${e.runtimeType}');
+      print('에러 메시지: $e');
+      print('--- 스택 트레이스 ---');
+      print(stackTrace);
+      _showErrorDialog('저장 중 오류가 발생했습니다. 디버그 콘솔을 확인하세요.');
     } finally {
-      setState(() => _isLoading = false);
+    // ==================== 👆 여기가 수정된 부분입니다 👆 ====================
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
   bool _isNewClient() => widget.code == null;
 
+  String _getBranchPrefix(String branchId) {
+    if (branchId.toLowerCase().contains('gimpo')) return 'GP';
+    if (branchId.toLowerCase().contains('chungcheong') || branchId.toLowerCase().contains('충청')) return 'CC';
+    return 'ETC';
+  }
+
+  void _toggleDeliveryDay(int day) {
+    setState(() {
+      if (_deliveryDays.contains(day)) {
+        _deliveryDays.remove(day);
+      } else {
+        _deliveryDays.add(day);
+        _deliveryDays.sort();
+      }
+    });
+  }
+  
   void _showErrorDialog(String message) {
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -303,6 +168,7 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
   }
 
   void _showSuccessDialog(String message) {
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -325,30 +191,12 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isNewClient() ? '거래처 등록' : '거래처 수정'),
-        backgroundColor: Colors.orange,
-        foregroundColor: Colors.white,
+        title: Text(_isNewClient() ? '새 거래처 등록' : '거래처 정보 수정'),
         actions: [
           if (_isLoading)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.all(16.0),
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                  ),
-                ),
-              ),
-            )
+            const Center(child: Padding(padding: EdgeInsets.all(16.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)))))
           else
-            IconButton(
-              onPressed: _saveClient,
-              icon: const Icon(Icons.save),
-              tooltip: '저장',
-            ),
+            IconButton(onPressed: _saveClient, icon: const Icon(Icons.save), tooltip: '저장'),
         ],
       ),
       body: Form(
@@ -356,490 +204,68 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 🔥 branchId 디버그 정보 표시
-              Container(
-                padding: const EdgeInsets.all(12),
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.blue.shade200),
+              TextFormField(
+                controller: _codeController,
+                decoration: const InputDecoration(
+                  labelText: '거래처 코드',
+                  border: OutlineInputBorder(),
                 ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info, color: Colors.blue.shade600, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '현재 지사: ${widget.branchId} | 접두사: ${_getBranchPrefix(widget.branchId)} | 새 거래처: ${_isNewClient()}',
-                        style: TextStyle(
-                          color: Colors.blue.shade700,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                readOnly: true,
+                style: const TextStyle(color: Colors.grey),
               ),
-              
-              _buildSectionTitle('기본 정보', Icons.business),
-              _buildBasicInfoSection(),
-              
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(
+                  labelText: '거래처명 *',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => (value?.trim().isEmpty ?? true) ? '거래처명을 입력해주세요.' : null,
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: _priceTier,
+                decoration: const InputDecoration(labelText: '가격 등급', border: OutlineInputBorder()),
+                items: ['A', 'B', 'C'].map((tier) => DropdownMenuItem(value: tier, child: Text('등급 $tier'))).toList(),
+                onChanged: (value) => setState(() => _priceTier = value!),
+              ),
               const SizedBox(height: 24),
-              
-              _buildSectionTitle('로그인 정보', Icons.lock),
-              _buildPasswordSection(),
-              
+              const Text('지정 배송요일', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Wrap(
+                spacing: 8,
+                children: List.generate(7, (index) {
+                  final day = index + 1;
+                  final dayLabels = ['월', '화', '수', '목', '금', '토', '일'];
+                  final isSelected = _deliveryDays.contains(day);
+                  return ChoiceChip(
+                    label: Text(dayLabels[index]),
+                    selected: isSelected,
+                    onSelected: (_) => _toggleDeliveryDay(day),
+                  );
+                }),
+              ),
               const SizedBox(height: 24),
-              
-              _buildSectionTitle('거래 조건', Icons.payment),
-              _buildTradingConditionsSection(),
-              
-              const SizedBox(height: 24),
-              
-              _buildSectionTitle('할인 정보', Icons.discount),
-              _buildDiscountSection(),
-              
-              const SizedBox(height: 32),
-              
-              _buildSaveButton(),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSectionTitle(String title, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Row(
-        children: [
-          Icon(icon, color: Colors.orange, size: 24),
-          const SizedBox(width: 8),
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.black87,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBasicInfoSection() {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: TextFormField(
-                    controller: _codeController,
-                    decoration: InputDecoration(
-                      labelText: '거래처 코드 *',
-                      hintText: 'CLIENT013, GP001',
-                      prefixIcon: const Icon(Icons.qr_code),
-                      border: const OutlineInputBorder(),
-                      helperText: _isNewClient() ? '자동으로 생성됩니다' : null,
-                      helperStyle: const TextStyle(color: Colors.green),
-                    ),
-                    textCapitalization: TextCapitalization.characters,
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return '거래처 코드를 입력하세요';
-                      }
-                      if (value.trim().length < 2) {
-                        return '거래처 코드는 2자 이상이어야 합니다';
-                      }
-                      return null;
-                    },
-                  ),
-                ),
-                if (_isNewClient()) ...[
-                  const SizedBox(width: 8),
-                  Expanded(
-                    flex: 1,
-                    child: ElevatedButton(
-                      onPressed: _isLoading ? null : _generateClientCode,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orange.shade100,
-                        foregroundColor: Colors.orange.shade700,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                      child: _isLoading 
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('재생성', style: TextStyle(fontSize: 12)),
-                    ),
-                  ),
-                ],
-                const SizedBox(width: 16),
-                Expanded(
-                  flex: 3,
-                  child: TextFormField(
-                    controller: _nameController,
-                    decoration: const InputDecoration(
-                      labelText: '거래처명 *',
-                      hintText: '서울마트',
-                      prefixIcon: Icon(Icons.store),
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return '거래처명을 입력하세요';
-                      }
-                      return null;
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: _phoneController,
-                    decoration: const InputDecoration(
-                      labelText: '전화번호',
-                      hintText: '02-1234-5678',
-                      prefixIcon: Icon(Icons.phone),
-                      border: OutlineInputBorder(),
-                    ),
-                    keyboardType: TextInputType.phone,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: TextFormField(
-                    controller: _contactPersonController,
-                    decoration: const InputDecoration(
-                      labelText: '담당자',
-                      hintText: '홍길동',
-                      prefixIcon: Icon(Icons.person),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            
-            TextFormField(
-              controller: _emailController,
-              decoration: const InputDecoration(
-                labelText: '이메일',
-                hintText: 'example@company.com',
-                prefixIcon: Icon(Icons.email),
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.emailAddress,
-            ),
-            const SizedBox(height: 16),
-            
-            TextFormField(
-              controller: _addressController,
-              decoration: const InputDecoration(
-                labelText: '주소',
-                hintText: '서울시 강남구...',
-                prefixIcon: Icon(Icons.location_on),
-                border: OutlineInputBorder(),
-              ),
-              maxLines: 2,
-            ),
-            const SizedBox(height: 16),
-            
-            TextFormField(
-              controller: _notesController,
-              decoration: const InputDecoration(
-                labelText: '메모',
-                hintText: '특이사항이나 메모를 입력하세요',
-                prefixIcon: Icon(Icons.note),
-                border: OutlineInputBorder(),
-              ),
-              maxLines: 3,
-            ),
-            const SizedBox(height: 16),
-            
-            SwitchListTile(
-              title: const Text('활성 상태'),
-              subtitle: Text(_isActive ? '활성화됨' : '비활성화됨'),
-              value: _isActive,
-              onChanged: (value) {
-                setState(() {
-                  _isActive = value;
-                });
-              },
-              activeColor: Colors.green,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPasswordSection() {
-    print('🔥 비밀번호 섹션 빌드 - 새 거래처: ${_isNewClient()}, 비밀번호 변경: $_changePassword');
-    
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 🔥 기존 거래처 수정 시에만 비밀번호 변경 스위치 표시
-            if (!_isNewClient()) ...[
+              TextFormField(controller: _phoneController, decoration: const InputDecoration(labelText: '연락처', border: OutlineInputBorder())),
+              const SizedBox(height: 16),
+              TextFormField(controller: _addressController, decoration: const InputDecoration(labelText: '주소', border: OutlineInputBorder())),
+              const SizedBox(height: 16),
+              TextFormField(controller: _contactPersonController, decoration: const InputDecoration(labelText: '담당자', border: OutlineInputBorder())),
+              const SizedBox(height: 16),
+              TextFormField(controller: _emailController, decoration: const InputDecoration(labelText: '이메일', border: OutlineInputBorder())),
+              const SizedBox(height: 16),
+              TextFormField(controller: _notesController, decoration: const InputDecoration(labelText: '메모', border: OutlineInputBorder()), maxLines: 3),
+              const SizedBox(height: 16),
               SwitchListTile(
-                title: const Text('비밀번호 변경'),
-                subtitle: const Text('체크하면 비밀번호를 변경할 수 있습니다'),
-                value: _changePassword,
-                onChanged: (value) {
-                  setState(() {
-                    _changePassword = value;
-                    if (!value) {
-                      _passwordController.clear();
-                      _confirmPasswordController.clear();
-                    }
-                  });
-                },
-                activeColor: Colors.orange,
-              ),
-              const SizedBox(height: 16),
-            ],
-            
-            // 🔥 새 거래처이거나 비밀번호 변경이 체크된 경우 비밀번호 입력 필드 표시
-            if (_isNewClient() || _changePassword) ...[
-              TextFormField(
-                controller: _passwordController,
-                obscureText: !_isPasswordVisible,
-                decoration: InputDecoration(
-                  labelText: '비밀번호 *',
-                  hintText: '최소 4자 이상',
-                  prefixIcon: const Icon(Icons.lock),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _isPasswordVisible ? Icons.visibility_off : Icons.visibility,
-                    ),
-                    onPressed: () {
-                      setState(() {
-                        _isPasswordVisible = !_isPasswordVisible;
-                      });
-                    },
-                  ),
-                  border: const OutlineInputBorder(),
-                ),
-                validator: (value) {
-                  if (_isNewClient() || _changePassword) {
-                    if (value == null || value.trim().isEmpty) {
-                      return '비밀번호를 입력하세요';
-                    }
-                    if (value.length < 4) {
-                      return '비밀번호는 최소 4자 이상이어야 합니다';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              
-              TextFormField(
-                controller: _confirmPasswordController,
-                obscureText: !_isConfirmPasswordVisible,
-                decoration: InputDecoration(
-                  labelText: '비밀번호 확인 *',
-                  hintText: '비밀번호를 다시 입력하세요',
-                  prefixIcon: const Icon(Icons.lock_outline),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _isConfirmPasswordVisible ? Icons.visibility_off : Icons.visibility,
-                    ),
-                    onPressed: () {
-                      setState(() {
-                        _isConfirmPasswordVisible = !_isConfirmPasswordVisible;
-                      });
-                    },
-                  ),
-                  border: const OutlineInputBorder(),
-                ),
-                validator: (value) {
-                  if (_isNewClient() || _changePassword) {
-                    if (value == null || value.trim().isEmpty) {
-                      return '비밀번호 확인을 입력하세요';
-                    }
-                    if (value != _passwordController.text) {
-                      return '비밀번호가 일치하지 않습니다';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.blue.shade200),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info, color: Colors.blue.shade600, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '이 비밀번호는 고객이 주문 앱에서 로그인할 때 사용됩니다.',
-                        style: TextStyle(
-                          color: Colors.blue.shade700,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ] else ...[
-              // 🔥 기존 거래처이고 비밀번호 변경이 체크되지 않은 경우
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.lock, color: Colors.grey.shade600),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        '비밀번호가 설정되어 있습니다. 변경하려면 위의 스위치를 켜주세요.',
-                        style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                title: const Text('활성 상태'),
+                value: _isActive,
+                onChanged: (value) => setState(() => _isActive = value),
               ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
-
-  Widget _buildTradingConditionsSection() {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            DropdownButtonFormField<String>(
-              value: _paymentMethod,
-              decoration: const InputDecoration(
-                labelText: '결제 방법',
-                prefixIcon: Icon(Icons.payment),
-                border: OutlineInputBorder(),
-              ),
-              items: const [
-                DropdownMenuItem(value: 'cash', child: Text('현금')),
-                DropdownMenuItem(value: 'credit', child: Text('외상')),
-                DropdownMenuItem(value: 'card', child: Text('카드')),
-                DropdownMenuItem(value: 'transfer', child: Text('계좌이체')),
-              ],
-              onChanged: (value) {
-                setState(() {
-                  _paymentMethod = value!;
-                });
-              },
-            ),
-            const SizedBox(height: 16),
-            
-            if (_paymentMethod == 'credit') ...[
-              TextFormField(
-                initialValue: _creditLimit.toString(),
-                decoration: const InputDecoration(
-                  labelText: '외상 한도 (원)',
-                  prefixIcon: Icon(Icons.account_balance_wallet),
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-                onChanged: (value) {
-                  _creditLimit = double.tryParse(value) ?? 0.0;
-                },
-              ),
-              const SizedBox(height: 16),
-              
-              TextFormField(
-                initialValue: _paymentTerms.toString(),
-                decoration: const InputDecoration(
-                  labelText: '결제 조건 (일)',
-                  prefixIcon: Icon(Icons.calendar_today),
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-                onChanged: (value) {
-                  _paymentTerms = int.tryParse(value) ?? 0;
-                },
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDiscountSection() {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            SwitchListTile(
-              title: const Text('할인 허용'),
-              subtitle: const Text('이 거래처에 할인을 적용할 수 있습니다'),
-              value: _allowDiscount,
-              onChanged: (value) {
-                setState(() {
-                  _allowDiscount = value;
-                  if (!value) {
-                    _discountRate = 0.0;
-                  }
-                });
-              },
-              activeColor: Colors.orange,
-            ),
-            
-            if (_allowDiscount) ...[
-              const SizedBox(height: 16),
-              TextFormField(
-                initialValue: _discountRate.toString(),
-                decoration: const InputDecoration(
-                  labelText: '기본 할인율 (%)',
-                  prefixIcon: Icon(Icons.percent),
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-                onChanged: (value) {
-                  _discountRate = double.tryParse(value) ?? 0.0;
-                },
-                validator: _allowDiscount ? (value) {
-                  final rate = double.tryParse(value ?? '
+}

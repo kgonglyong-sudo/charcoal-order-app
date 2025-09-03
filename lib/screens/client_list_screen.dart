@@ -1,3 +1,4 @@
+// lib/screens/client_list_screen.dart
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
@@ -16,9 +17,11 @@ class _ClientListScreenState extends State<ClientListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final branchId = context.watch<AuthService>().branchId;
+    final authService = context.read<AuthService>();
+    final branchId = authService.branchId;
+
     if (branchId == null || branchId.isEmpty) {
-      return const Scaffold(body: Center(child: Text('지점 정보가 없습니다.')));
+      return const Scaffold(body: Center(child: Text('지점 정보가 없습니다. 다시 로그인해주세요.')));
     }
 
     Query<Map<String, dynamic>> q = FirebaseFirestore.instance
@@ -38,10 +41,10 @@ class _ClientListScreenState extends State<ClientListScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('거래처'),
+        title: const Text('거래처 관리'),
         actions: [
           IconButton(
-            tooltip: _showInactive ? '활성만 보기' : '비활성 포함',
+            tooltip: _showInactive ? '활성 거래처만 보기' : '모든 거래처 보기',
             icon: Icon(_showInactive ? Icons.visibility : Icons.visibility_off),
             onPressed: () => setState(() => _showInactive = !_showInactive),
           ),
@@ -54,7 +57,7 @@ class _ClientListScreenState extends State<ClientListScreen> {
             child: TextField(
               decoration: const InputDecoration(
                 prefixIcon: Icon(Icons.search),
-                hintText: '이름/코드 검색',
+                hintText: '거래처명으로 검색',
                 border: OutlineInputBorder(),
               ),
               onChanged: (v) => setState(() => _query = v),
@@ -67,8 +70,12 @@ class _ClientListScreenState extends State<ClientListScreen> {
                 if (snap.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
+                if (snap.hasError) {
+                  return Center(child: Text('오류가 발생했습니다: ${snap.error}'));
+                }
                 final docs = snap.data?.docs ?? [];
                 if (docs.isEmpty) return const Center(child: Text('등록된 거래처가 없습니다.'));
+                
                 return ListView.separated(
                   itemCount: docs.length,
                   separatorBuilder: (_, __) => const Divider(height: 0),
@@ -92,9 +99,9 @@ class _ClientListScreenState extends State<ClientListScreen> {
                         context,
                         MaterialPageRoute(
                           builder: (_) => ClientEditScreen(
-                            branchId: branchId, // 🔥 수정: branchId 추가
+                            branchId: branchId,
                             code: code, 
-                            initData: m
+                            initData: m,
                           ),
                         ),
                       ),
@@ -111,8 +118,8 @@ class _ClientListScreenState extends State<ClientListScreen> {
           context,
           MaterialPageRoute(
             builder: (_) => ClientEditScreen(
-              branchId: branchId, // 🔥 수정: 새 거래처 추가 시 branchId 전달
-            )
+              branchId: branchId,
+            ),
           ),
         ),
         icon: const Icon(Icons.add),
