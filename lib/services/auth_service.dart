@@ -2,6 +2,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:math';
 
 import '../models/client.dart';
 
@@ -57,7 +58,6 @@ class AuthService with ChangeNotifier {
     });
   }
 
-  // ✅ _loadUserProfile 함수를 수정합니다.
   Future<void> _loadUserProfile(String uid) async {
     final snap = await _db.collection('user').doc(uid).get();
     final data = snap.data() ?? {};
@@ -92,11 +92,11 @@ class AuthService with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> login(String codeRaw) async {
-    final code = codeRaw.trim().toUpperCase();
-    if (code.isEmpty) {
+  Future<bool> login(String clientCode, String password) async {
+    final code = clientCode.trim().toUpperCase();
+    if (code.isEmpty || password.isEmpty) {
       hasError = true;
-      errorMessage = '거래처 코드를 입력해주세요.';
+      errorMessage = '거래처 코드와 비밀번호를 입력해주세요.';
       notifyListeners();
       return false;
     }
@@ -105,7 +105,7 @@ class AuthService with ChangeNotifier {
     errorMessage = null;
 
     try {
-      debugPrint('🔍 로그인 시도: code=$code');
+      debugPrint('🔍 로그인 시도: clientCode=$clientCode');
       final clientQuery = _db.collectionGroup('clients')
           .where('clientCode', isEqualTo: code)
           .limit(1);
@@ -121,8 +121,15 @@ class AuthService with ChangeNotifier {
       
       final clientDoc = clientSnap.docs.first;
       final clientData = clientDoc.data();
+      final storedPassword = clientData['password'] as String?;
+      if (storedPassword != password) {
+         hasError = true;
+         errorMessage = '비밀번호가 올바르지 않습니다.';
+         _isSignedIn = false;
+         notifyListeners();
+         return false;
+      }
 
-      // ✅ null 허용으로 안전하게 수정
       final branchId = (clientData['branchId'] as String?) ?? '';
       final name = (clientData['name'] as String?) ?? '';
       final priceTier = ((clientData['priceTier'] as String?) ?? 'C').toUpperCase();
@@ -195,6 +202,8 @@ class AuthService with ChangeNotifier {
   Future<String> createClientAuto({
     required String branchKey,
     required String name,
+    required String password,
+    required bool isPaymentRequired,
     String priceTier = 'C',
     Map<String, num>? priceOverrides,
     List<int>? deliveryDays,
@@ -226,7 +235,9 @@ class AuthService with ChangeNotifier {
       tx.set(clientRef, {
         'branchId': branchId,
         'branchKey': branchKey,
-        'code': code,
+        'clientCode': code,
+        'password': password,
+        'isPaymentRequired': isPaymentRequired,
         'name': name,
         'priceTier': priceTier.toUpperCase(),
         'priceOverrides': priceOverrides ?? <String, num>{},
@@ -250,6 +261,42 @@ class AuthService with ChangeNotifier {
       if (id != null && id.isNotEmpty) return id;
     }
     return null;
+  }
+  
+  Future<String> previewNextClientCodeByPolicy(String branchId) async {
+    final db = FirebaseFirestore.instance;
+    final bSnap = await db.collection('branches').doc(branchId).get();
+    final m = bSnap.data() as Map<String, dynamic>;
+    final scheme = (m['codeScheme'] ?? 'legacy') as String;
+    final prefix = _getBranchPrefix(branchId);
+    
+    if (scheme == 'prefix-seq') {
+      final next = (m['clientSeq'] ?? 1) as int;
+      if (prefix.isEmpty) return '자동(지점코드 없음)';
+      return '$prefix${next.toString().padLeft(3, '0')}';
+    } else {
+      final last = await db
+          .collection('branches').doc(branchId)
+          .collection('clients')
+          .orderBy('clientCode', descending: true)
+          .limit(1)
+          .get();
+      int lastNum = 0;
+      if (last.docs.isNotEmpty) {
+        final lastCode = last.docs.first.data()['clientCode'] as String? ?? '';
+        final match = RegExp(r'(\d+)').firstMatch(lastCode);
+        lastNum = int.tryParse(match?.group(1) ?? '0') ?? 0;
+      }
+      final next = lastNum + 1;
+      final padded = next.toString().padLeft(3, '0');
+      return 'CLIENT$padded';
+    }
+  }
+  
+  String _getBranchPrefix(String branchId) {
+    if (branchId.toLowerCase().contains('gimpo')) return 'GP';
+    if (branchId.toLowerCase().contains('chungcheong') || branchId.toLowerCase().contains('충청')) return 'CC';
+    return 'ETC';
   }
 
   Future<void> signOut() async {

@@ -23,30 +23,33 @@ class ClientEditScreen extends StatefulWidget {
 class _ClientEditScreenState extends State<ClientEditScreen> {
   final _formKey = GlobalKey<FormState>();
 
-  // 컨트롤러
   final _codeController = TextEditingController();
   final _nameController = TextEditingController();
+  final _passwordController = TextEditingController();
   final _phoneController = TextEditingController();
   final _addressController = TextEditingController();
   final _contactPersonController = TextEditingController();
   final _emailController = TextEditingController();
   final _notesController = TextEditingController();
   
-  // 상태 변수
   String _priceTier = 'C';
   List<int> _deliveryDays = [];
   bool _isActive = true;
   bool _isLoading = false;
+  bool _isPaymentRequired = true;
 
   @override
   void initState() {
     super.initState();
     _loadClientData();
+    if (_isNewClient()) {
+      _loadAutoCodePreview();
+    }
   }
 
   void _loadClientData() {
     if (_isNewClient()) {
-      _codeController.text = '(자동 생성)';
+      _codeController.text = '불러오는 중...';
     } else {
       final data = widget.initData!;
       _codeController.text = widget.code ?? '';
@@ -59,6 +62,26 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
       _isActive = data['isActive'] ?? true;
       _priceTier = data['priceTier'] ?? 'C';
       _deliveryDays = List<int>.from(data['deliveryDays'] ?? []);
+      _isPaymentRequired = data['isPaymentRequired'] ?? true;
+    }
+  }
+
+  Future<void> _loadAutoCodePreview() async {
+    try {
+      final authService = context.read<AuthService>();
+      final previewCode = await authService.previewNextClientCodeByPolicy(widget.branchId);
+      if (mounted) {
+        setState(() {
+          _codeController.text = previewCode;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _codeController.text = '오류: 코드 생성 실패';
+        });
+      }
+      print('❌ 코드 미리보기 로드 중 오류 발생: $e');
     }
   }
 
@@ -66,6 +89,7 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
   void dispose() {
     _codeController.dispose();
     _nameController.dispose();
+    _passwordController.dispose();
     _phoneController.dispose();
     _addressController.dispose();
     _contactPersonController.dispose();
@@ -76,12 +100,15 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
 
   Future<void> _saveClient() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_isNewClient() && _passwordController.text.isEmpty) {
+      _showErrorDialog('새 거래처 등록 시 비밀번호는 필수입니다.');
+      return;
+    }
 
     setState(() => _isLoading = true);
     
-    // ==================== 👇 여기가 수정된 부분입니다 👇 ====================
     try {
-      final authService = context.read<AuthService>(listen: false);
+      final authService = context.read<AuthService>();
       
       if (_isNewClient()) {
         final branchKey = _getBranchPrefix(widget.branchId);
@@ -89,6 +116,8 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
         final newCode = await authService.createClientAuto(
           branchKey: branchKey,
           name: _nameController.text.trim(),
+          password: _passwordController.text,
+          isPaymentRequired: _isPaymentRequired,
           priceTier: _priceTier,
           deliveryDays: _deliveryDays,
         );
@@ -111,12 +140,12 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
           'isActive': _isActive,
           'priceTier': _priceTier,
           'deliveryDays': _deliveryDays,
+          'isPaymentRequired': _isPaymentRequired,
           'updatedAt': FieldValue.serverTimestamp(),
         });
         _showSuccessDialog('거래처 정보가 성공적으로 수정되었습니다');
       }
-    } catch (e, stackTrace) { // ✨ e와 함께 stackTrace를 잡도록 변경
-      // ✨✨✨ 정밀 탐지기 ✨✨✨
+    } catch (e, stackTrace) {
       print('🔥🔥🔥 거래처 저장 최종 에러 🔥🔥🔥');
       print('에러 타입: ${e.runtimeType}');
       print('에러 메시지: $e');
@@ -124,7 +153,6 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
       print(stackTrace);
       _showErrorDialog('저장 중 오류가 발생했습니다. 디버그 콘솔을 확인하세요.');
     } finally {
-    // ==================== 👆 여기가 수정된 부분입니다 👆 ====================
       if (mounted) {
         setState(() => _isLoading = false);
       }
@@ -216,6 +244,18 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                 style: const TextStyle(color: Colors.grey),
               ),
               const SizedBox(height: 16),
+              if (_isNewClient())
+                TextFormField(
+                  controller: _passwordController,
+                  decoration: const InputDecoration(
+                    labelText: '비밀번호 *',
+                    hintText: '새 거래처의 비밀번호를 설정해주세요',
+                    border: OutlineInputBorder(),
+                  ),
+                  obscureText: true,
+                  validator: (value) => (value?.trim().isEmpty ?? true) ? '비밀번호를 입력해주세요.' : null,
+                ),
+              if (_isNewClient()) const SizedBox(height: 16),
               TextFormField(
                 controller: _nameController,
                 decoration: const InputDecoration(
@@ -247,6 +287,12 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
                 }),
               ),
               const SizedBox(height: 24),
+              SwitchListTile(
+                title: const Text('주문 시 결제 필수'),
+                value: _isPaymentRequired,
+                onChanged: (value) => setState(() => _isPaymentRequired = value),
+              ),
+              const SizedBox(height: 16),
               TextFormField(controller: _phoneController, decoration: const InputDecoration(labelText: '연락처', border: OutlineInputBorder())),
               const SizedBox(height: 16),
               TextFormField(controller: _addressController, decoration: const InputDecoration(labelText: '주소', border: OutlineInputBorder())),
@@ -268,4 +314,10 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
       ),
     );
   }
+}
+
+String _getBranchPrefix(String branchId) {
+  if (branchId.toLowerCase().contains('gimpo')) return 'GP';
+  if (branchId.toLowerCase().contains('chungcheong') || branchId.toLowerCase().contains('충청')) return 'CC';
+  return 'ETC';
 }

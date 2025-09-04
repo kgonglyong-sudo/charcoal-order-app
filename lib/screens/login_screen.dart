@@ -13,11 +13,11 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStateMixin {
   final _clientCodeController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _isCodeLoading = false;
 
   late final AnimationController _anim;
   late final _CharcoalParticles _particles;
-  String? _selectedBranchId = 'CC';
 
   @override
   void initState() {
@@ -50,21 +50,23 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
   void dispose() {
     _anim.dispose();
     _clientCodeController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
   Future<void> _loginWithCode() async {
     final code = _clientCodeController.text.trim();
-    if (code.isEmpty) return _toast('거래처 코드를 입력해주세요');
+    final password = _passwordController.text.trim();
+
+    if (code.isEmpty || password.isEmpty) return _toast('거래처 코드와 비밀번호를 입력해주세요');
     
     setState(() => _isCodeLoading = true);
     
     try {
-      // ✅ `loginWithCode` 대신 `login` 함수를 호출하도록 수정
-      final ok = await context.read<AuthService>().login(code);
+      final ok = await context.read<AuthService>().login(code, password);
       if (!mounted) return;
       if (!ok) {
-        _toast('잘못된 거래처 코드입니다');
+        _toast('로그인 정보가 올바르지 않습니다');
       }
     } catch (e) {
       if (!mounted) return;
@@ -292,6 +294,18 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                             onSubmitted: (_) => _loginWithCode(),
                           ),
                           const SizedBox(height: 12),
+                          TextField(
+                            controller: _passwordController,
+                            obscureText: true,
+                            decoration: InputDecoration(
+                              labelText: '비밀번호',
+                              prefixIcon: const Icon(Icons.lock),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            onSubmitted: (_) => _loginWithCode(),
+                          ),
                           const SizedBox(height: 12),
                           SizedBox(
                             width: double.infinity,
