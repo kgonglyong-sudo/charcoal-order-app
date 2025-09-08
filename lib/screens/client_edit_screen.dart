@@ -109,12 +109,17 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
     
     try {
       final authService = context.read<AuthService>();
+
+      if (!authService.isSignedIn || !(['manager', 'admin'].contains(authService.role))) {
+        throw FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+            message: '매니저 권한이 필요합니다.');
+      }
       
       if (_isNewClient()) {
-        final branchKey = _getBranchPrefix(widget.branchId);
-        
         final newCode = await authService.createClientAuto(
-          branchKey: branchKey,
+          branchId: widget.branchId,
           name: _nameController.text.trim(),
           password: _passwordController.text,
           isPaymentRequired: _isPaymentRequired,
@@ -160,12 +165,6 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
   }
 
   bool _isNewClient() => widget.code == null;
-
-  String _getBranchPrefix(String branchId) {
-    if (branchId.toLowerCase().contains('gimpo')) return 'GP';
-    if (branchId.toLowerCase().contains('chungcheong') || branchId.toLowerCase().contains('충청')) return 'CC';
-    return 'ETC';
-  }
 
   void _toggleDeliveryDay(int day) {
     setState(() {
@@ -314,10 +313,4 @@ class _ClientEditScreenState extends State<ClientEditScreen> {
       ),
     );
   }
-}
-
-String _getBranchPrefix(String branchId) {
-  if (branchId.toLowerCase().contains('gimpo')) return 'GP';
-  if (branchId.toLowerCase().contains('chungcheong') || branchId.toLowerCase().contains('충청')) return 'CC';
-  return 'ETC';
 }

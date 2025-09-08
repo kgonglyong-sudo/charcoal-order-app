@@ -123,11 +123,11 @@ class AuthService with ChangeNotifier {
       final clientData = clientDoc.data();
       final storedPassword = clientData['password'] as String?;
       if (storedPassword != password) {
-         hasError = true;
-         errorMessage = '비밀번호가 올바르지 않습니다.';
-         _isSignedIn = false;
-         notifyListeners();
-         return false;
+          hasError = true;
+          errorMessage = '비밀번호가 올바르지 않습니다.';
+          _isSignedIn = false;
+          notifyListeners();
+          return false;
       }
 
       final branchId = (clientData['branchId'] as String?) ?? '';
@@ -199,8 +199,9 @@ class AuthService with ChangeNotifier {
     }
   }
 
+  // --- 수정된 createClientAuto 메서드 ---
   Future<String> createClientAuto({
-    required String branchKey,
+    required String branchId,
     required String name,
     required String password,
     required bool isPaymentRequired,
@@ -211,32 +212,39 @@ class AuthService with ChangeNotifier {
     if (!(_role == 'manager' || _role == 'admin')) {
       throw FirebaseException(plugin: 'cloud_firestore', code: 'permission-denied', message: '매니저 권한이 필요합니다.');
     }
-    final branchId = await _resolveBranchId(branchKey);
-    if (branchId == null) {
-      throw Exception('지점 매핑 없음: $branchKey (branch_keys 컬렉션 확인)');
-    }
+    
     final db = _db;
-    final countersRef = db.collection('branches').doc(branchId)
-                         .collection('meta').doc('counters');
+    final countersRef = db.collection('branches').doc(branchId).collection('meta').doc('counters');
+
     return await db.runTransaction<String>((tx) async {
+      print('💡 1단계: 트랜잭션 시작');
       final now = FieldValue.serverTimestamp();
       final cSnap = await tx.get(countersRef);
       var nextSeq = (cSnap.data()?['clientSeq'] as int?) ?? 1;
-      late DocumentReference<Map<String, dynamic>> clientRef;
+      
+      print('💡 2단계: 카운터 문서 읽기 완료');
       late String code;
       while (true) {
-        code = '$branchKey${nextSeq.toString().padLeft(3, '0')}';
-        clientRef = db.collection('branches').doc(branchId)
-                     .collection('clients').doc(code);
-        final exist = await tx.get(clientRef);
+        code = 'CLIENT${nextSeq.toString().padLeft(3, '0')}';
+        final existingClientRef = db.collection('branches').doc(branchId).collection('clients').doc(code);
+        final exist = await tx.get(existingClientRef);
         if (!exist.exists) break;
         nextSeq++;
       }
+      print('💡 3단계: 새 거래처 코드 [$code] 생성 완료');
+      
+      final authDocRef = db.collection('client_auth').doc(code);
+      tx.set(authDocRef, {
+        'branchId': branchId,
+        'password': password,
+        'createdAt': now,
+      });
+      print('💡 4단계: client_auth 문서 쓰기 준비 완료');
+
+      final clientRef = db.collection('branches').doc(branchId).collection('clients').doc(code);
       tx.set(clientRef, {
         'branchId': branchId,
-        'branchKey': branchKey,
         'clientCode': code,
-        'password': password,
         'isPaymentRequired': isPaymentRequired,
         'name': name,
         'priceTier': priceTier.toUpperCase(),
@@ -246,32 +254,25 @@ class AuthService with ChangeNotifier {
         'createdAt': now,
         'updatedAt': now,
       });
+      print('💡 5단계: clients 문서 쓰기 준비 완료');
+      
       tx.set(countersRef, {'clientSeq': nextSeq + 1}, SetOptions(merge: true));
+      print('💡 6단계: 카운터 업데이트 준비 완료');
+      
       debugPrint('✅ CREATED path: branches/$branchId/clients/$code');
       return code;
     });
   }
 
-  Future<String?> _resolveBranchId(String branchKey) async {
-    final direct = await _db.collection('branches').doc(branchKey).get();
-    if (direct.exists) return branchKey;
-    final mapDoc = await _db.collection('branch_keys').doc(branchKey).get();
-    if (mapDoc.exists) {
-      final id = (mapDoc.data()?['branchId'] as String?)?.trim();
-      if (id != null && id.isNotEmpty) return id;
-    }
-    return null;
-  }
-  
   Future<String> previewNextClientCodeByPolicy(String branchId) async {
     final db = FirebaseFirestore.instance;
     final bSnap = await db.collection('branches').doc(branchId).get();
-    final m = bSnap.data() as Map<String, dynamic>;
+    final m = bSnap.data() as Map<String, dynamic>? ?? {};
     final scheme = (m['codeScheme'] ?? 'legacy') as String;
-    final prefix = _getBranchPrefix(branchId);
     
     if (scheme == 'prefix-seq') {
       final next = (m['clientSeq'] ?? 1) as int;
+      final prefix = (m['codePrefix'] ?? 'CLIENT') as String;
       if (prefix.isEmpty) return '자동(지점코드 없음)';
       return '$prefix${next.toString().padLeft(3, '0')}';
     } else {
@@ -293,12 +294,6 @@ class AuthService with ChangeNotifier {
     }
   }
   
-  String _getBranchPrefix(String branchId) {
-    if (branchId.toLowerCase().contains('gimpo')) return 'GP';
-    if (branchId.toLowerCase().contains('chungcheong') || branchId.toLowerCase().contains('충청')) return 'CC';
-    return 'ETC';
-  }
-
   Future<void> signOut() async {
     _setLoading(true);
     try {
