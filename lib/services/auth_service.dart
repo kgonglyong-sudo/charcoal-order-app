@@ -2,7 +2,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'dart:math';
 
 import '../models/client.dart';
 
@@ -52,7 +51,10 @@ class AuthService with ChangeNotifier {
 
   Future<void> signInWithEmail(String email, String password) async {
     await _safe(() async {
-      final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
+      final cred = await _auth.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
       await _loadUserProfile(cred.user!.uid);
       _isSignedIn = true;
     });
@@ -69,18 +71,27 @@ class AuthService with ChangeNotifier {
       Map<String, dynamic> clientDocData = {};
       if (branchId.isNotEmpty && code.isNotEmpty) {
         final cs = await _db
-            .collection('branches').doc(branchId)
-            .collection('clients').doc(code)
+            .collection('branches')
+            .doc(branchId)
+            .collection('clients')
+            .doc(code)
             .get();
         clientDocData = cs.data() ?? {};
       }
-      final loadedTier = ((data['priceTier'] as String?) ?? (clientDocData['priceTier'] as String?) ?? 'C').toUpperCase();
-      final safeDays = ((clientDocData['deliveryDays'] as List?)?.whereType<int>() ?? const <int>[])
-          .where((e) => e >= 1 && e <= 7)
-          .toList();
+      final loadedTier = ((data['priceTier'] as String?) ??
+              (clientDocData['priceTier'] as String?) ??
+              'C')
+          .toUpperCase();
+      final safeDays =
+          ((clientDocData['deliveryDays'] as List?)?.whereType<int>() ??
+                  const <int>[])
+              .where((e) => e >= 1 && e <= 7)
+              .toList();
       _currentClient = Client(
         code: code,
-        name: (data['name'] as String?) ?? (clientDocData['name'] as String?) ?? '',
+        name: (data['name'] as String?) ??
+            (clientDocData['name'] as String?) ??
+            '',
         branchId: branchId,
         priceTier: loadedTier,
         deliveryDays: safeDays,
@@ -106,7 +117,8 @@ class AuthService with ChangeNotifier {
 
     try {
       debugPrint('🔍 로그인 시도: clientCode=$clientCode');
-      final clientQuery = _db.collectionGroup('clients')
+      final clientQuery = _db
+          .collectionGroup('clients')
           .where('clientCode', isEqualTo: code)
           .limit(1);
       final clientSnap = await clientQuery.get();
@@ -118,25 +130,28 @@ class AuthService with ChangeNotifier {
         notifyListeners();
         return false;
       }
-      
+
       final clientDoc = clientSnap.docs.first;
       final clientData = clientDoc.data();
       final storedPassword = clientData['password'] as String?;
       if (storedPassword != password) {
-          hasError = true;
-          errorMessage = '비밀번호가 올바르지 않습니다.';
-          _isSignedIn = false;
-          notifyListeners();
-          return false;
+        hasError = true;
+        errorMessage = '비밀번호가 올바르지 않습니다.';
+        _isSignedIn = false;
+        notifyListeners();
+        return false;
       }
 
       final branchId = (clientData['branchId'] as String?) ?? '';
       final name = (clientData['name'] as String?) ?? '';
-      final priceTier = ((clientData['priceTier'] as String?) ?? 'C').toUpperCase();
-      final parsedDays = ((clientData['deliveryDays'] as List?)?.whereType<int>() ?? const <int>[])
-          .where((e) => e >= 1 && e <= 7)
-          .toList();
-      
+      final priceTier =
+          ((clientData['priceTier'] as String?) ?? 'C').toUpperCase();
+      final parsedDays =
+          ((clientData['deliveryDays'] as List?)?.whereType<int>() ??
+                  const <int>[])
+              .where((e) => e >= 1 && e <= 7)
+              .toList();
+
       User? user = _auth.currentUser;
       if (user == null) {
         user = (await _auth.signInAnonymously()).user;
@@ -199,7 +214,7 @@ class AuthService with ChangeNotifier {
     }
   }
 
-  // --- 수정된 createClientAuto 메서드 ---
+  // --- 자동 거래처 코드 생성 + 거래처 등록 ---
   Future<String> createClientAuto({
     required String branchId,
     required String name,
@@ -210,38 +225,59 @@ class AuthService with ChangeNotifier {
     List<int>? deliveryDays,
   }) async {
     if (!(_role == 'manager' || _role == 'admin')) {
-      throw FirebaseException(plugin: 'cloud_firestore', code: 'permission-denied', message: '매니저 권한이 필요합니다.');
+      throw FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+        message: '매니저 권한이 필요합니다.',
+      );
     }
-    
+
     final db = _db;
-    final countersRef = db.collection('branches').doc(branchId).collection('meta').doc('counters');
+    final countersRef = db
+        .collection('branches')
+        .doc(branchId)
+        .collection('meta')
+        .doc('counters');
 
     return await db.runTransaction<String>((tx) async {
-      print('💡 1단계: 트랜잭션 시작');
+      debugPrint('💡 [createClientAuto] 트랜잭션 시작');
       final now = FieldValue.serverTimestamp();
+
+      // 1) 마지막 번호 읽기 (없으면 0)
       final cSnap = await tx.get(countersRef);
-      var nextSeq = (cSnap.data()?['clientSeq'] as int?) ?? 1;
-      
-      print('💡 2단계: 카운터 문서 읽기 완료');
+      int lastSeq = (cSnap.data()?['clientSeq'] as int?) ?? 0;
+      int nextSeq = lastSeq + 1;
+
+      // 2) 혹시 같은 코드가 이미 있으면 한 칸씩 더 올리기 (이중 안전장치)
       late String code;
       while (true) {
         code = 'CLIENT${nextSeq.toString().padLeft(3, '0')}';
-        final existingClientRef = db.collection('branches').doc(branchId).collection('clients').doc(code);
+        final existingClientRef = db
+            .collection('branches')
+            .doc(branchId)
+            .collection('clients')
+            .doc(code);
         final exist = await tx.get(existingClientRef);
         if (!exist.exists) break;
         nextSeq++;
       }
-      print('💡 3단계: 새 거래처 코드 [$code] 생성 완료');
-      
+      debugPrint('💡 새 거래처 코드 확정: $code (seq=$nextSeq)');
+
+      // 3) 인증 정보 저장
       final authDocRef = db.collection('client_auth').doc(code);
       tx.set(authDocRef, {
         'branchId': branchId,
         'password': password,
         'createdAt': now,
       });
-      print('💡 4단계: client_auth 문서 쓰기 준비 완료');
 
-      final clientRef = db.collection('branches').doc(branchId).collection('clients').doc(code);
+      // 4) 거래처 문서 저장
+      final clientRef = db
+          .collection('branches')
+          .doc(branchId)
+          .collection('clients')
+          .doc(code);
+
       tx.set(clientRef, {
         'branchId': branchId,
         'clientCode': code,
@@ -249,51 +285,43 @@ class AuthService with ChangeNotifier {
         'name': name,
         'priceTier': priceTier.toUpperCase(),
         'priceOverrides': priceOverrides ?? <String, num>{},
+        'password': password, // ✅ 로그인 비교용 비밀번호 저장
         if (deliveryDays != null)
-          'deliveryDays': deliveryDays.where((e) => e >= 1 && e <= 7).toList(),
+          'deliveryDays':
+              deliveryDays.where((e) => e >= 1 && e <= 7).toList(),
         'createdAt': now,
         'updatedAt': now,
       });
-      print('💡 5단계: clients 문서 쓰기 준비 완료');
-      
-      tx.set(countersRef, {'clientSeq': nextSeq + 1}, SetOptions(merge: true));
-      print('💡 6단계: 카운터 업데이트 준비 완료');
-      
-      debugPrint('✅ CREATED path: branches/$branchId/clients/$code');
+
+      // 5) 카운터에 "마지막 번호" 저장
+      tx.set(
+        countersRef,
+        {'clientSeq': nextSeq},
+        SetOptions(merge: true),
+      );
+
+      debugPrint(
+          '✅ CREATED path: branches/$branchId/clients/$code (clientSeq=$nextSeq)');
       return code;
     });
   }
 
+  // --- 화면에서 보여줄 "다음 거래처 코드" 미리보기 ---
   Future<String> previewNextClientCodeByPolicy(String branchId) async {
-    final db = FirebaseFirestore.instance;
-    final bSnap = await db.collection('branches').doc(branchId).get();
-    final m = bSnap.data() as Map<String, dynamic>? ?? {};
-    final scheme = (m['codeScheme'] ?? 'legacy') as String;
-    
-    if (scheme == 'prefix-seq') {
-      final next = (m['clientSeq'] ?? 1) as int;
-      final prefix = (m['codePrefix'] ?? 'CLIENT') as String;
-      if (prefix.isEmpty) return '자동(지점코드 없음)';
-      return '$prefix${next.toString().padLeft(3, '0')}';
-    } else {
-      final last = await db
-          .collection('branches').doc(branchId)
-          .collection('clients')
-          .orderBy('clientCode', descending: true)
-          .limit(1)
-          .get();
-      int lastNum = 0;
-      if (last.docs.isNotEmpty) {
-        final lastCode = last.docs.first.data()['clientCode'] as String? ?? '';
-        final match = RegExp(r'(\d+)').firstMatch(lastCode);
-        lastNum = int.tryParse(match?.group(1) ?? '0') ?? 0;
-      }
-      final next = lastNum + 1;
-      final padded = next.toString().padLeft(3, '0');
-      return 'CLIENT$padded';
-    }
+    final countersRef = _db
+        .collection('branches')
+        .doc(branchId)
+        .collection('meta')
+        .doc('counters');
+
+    final snap = await countersRef.get();
+    int lastSeq = (snap.data()?['clientSeq'] as int?) ?? 0;
+    final nextSeq = lastSeq + 1;
+
+    final code = 'CLIENT${nextSeq.toString().padLeft(3, '0')}';
+    return code;
   }
-  
+
   Future<void> signOut() async {
     _setLoading(true);
     try {
@@ -316,12 +344,13 @@ class AuthService with ChangeNotifier {
       hasError = false;
       errorMessage = null;
     } on FirebaseException catch (e) {
-      print('❌ auth_service에서 Firebase 에러 발생! -> ${e.code}: ${e.message}');
+      debugPrint(
+          '❌ auth_service에서 Firebase 에러 발생! -> ${e.code}: ${e.message}');
       hasError = true;
       errorMessage = e.message ?? e.code;
       rethrow;
     } catch (e) {
-      print('❌ auth_service에서 일반 에러 발생! -> $e');
+      debugPrint('❌ auth_service에서 일반 에러 발생! -> $e');
       hasError = true;
       errorMessage = e.toString();
       rethrow;
